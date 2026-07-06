@@ -1,0 +1,4 @@
+fal-client==0.5.9
+yt-dlp==2024.12.13
+gradio==5.9.1
+python-dotenv==1.0.1
