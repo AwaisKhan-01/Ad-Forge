@@ -6,3 +6,4 @@ outputs/
 venv/
 *.log
 .DS_Store
+downloads/
