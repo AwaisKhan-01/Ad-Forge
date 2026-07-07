@@ -5,6 +5,12 @@ from app.pipeline.uploader import upload_video
 from app.pipeline.analyzer import analyze_video
 from app.pipeline.generator import generate_video
 
+from app.pipeline.model_registry import MODELS
+
+model_choice = gr.Dropdown(choices=list(MODELS.keys()), value="seedance-2.0-fast", label="Generation Model")
+duration = gr.Slider(minimum=3, maximum=15, step=1, value=8, label="Duration (seconds)")
+aspect_ratio = gr.Dropdown(choices=["auto", "16:9", "9:16", "1:1", "4:3", "3:4", "21:9"], value="auto", label="Aspect Ratio")
+resolution = gr.Dropdown(choices=["480p", "720p"], value="720p", label="Resolution (Seedance only)")
 
 def run_pipeline(ad_url: str, requested_changes: str, progress=gr.Progress()):
     progress(0.1, desc="Downloading ad video...")
