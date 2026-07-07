@@ -33,6 +33,13 @@ def run_pipeline(ad_url, requested_changes, model_choice, duration, aspect_ratio
     return breakdown, output_url
 
 
+def update_duration_range(model_choice):
+    """Keeps the duration slider inside the selected model's real supported range."""
+    d = MODELS[model_choice]["durations"]
+    default_value = min(max(d), 8)
+    return gr.update(minimum=min(d), maximum=max(d), value=default_value)
+
+
 with gr.Blocks() as demo:
     gr.Markdown("# AdForge — AI Ad Recreation Pipeline")
 
@@ -66,6 +73,12 @@ with gr.Blocks() as demo:
 
     breakdown_output = gr.Textbox(label="Creative Breakdown (from Nemotron)", lines=10)
     video_output = gr.Video(label="Generated Ad")
+
+    model_choice.change(
+        fn=update_duration_range,
+        inputs=[model_choice],
+        outputs=[duration],
+    )
 
     run_btn.click(
         fn=run_pipeline,
