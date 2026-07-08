@@ -99,7 +99,12 @@ def generate_video(model_id: str, video_url: str, local_video_path: str,
             tracker.add_fusion_call()
 
         else:
-            final_prompt = fuse_prompt(breakdown, combined_changes, model_input_type="video")
+            # num_user_images enables full product/content swap: user screenshots become @Image1..N
+            final_prompt = fuse_prompt(
+                breakdown, combined_changes,
+                model_input_type="video",
+                num_user_images=len(user_images),
+            )
             tracker.add_fusion_call()
 
         if i == 0:
