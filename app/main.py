@@ -20,15 +20,15 @@ def run_pipeline(ad_url, requested_changes, model_choice, duration, aspect_ratio
 
     progress(0.8, desc=f"Generating with {MODELS[model_choice]['label']}...")
     output_url = generate_video(
-        model_id=model_choice,
-        video_url=hosted_url,
-        local_video_path=local_path,
-        breakdown=breakdown,
-        requested_changes=requested_changes,
-        duration=duration,
-        aspect_ratio=aspect_ratio,
-        resolution=resolution,
-    )
+    model_id=model_choice,
+    video_url=hosted_url,
+    local_video_path=local_path,
+    breakdown=breakdown,
+    requested_changes=requested_changes,
+    total_duration=duration,          # renamed param
+    aspect_ratio=aspect_ratio,
+    resolution=resolution,
+)
 
     return breakdown, output_url
 
@@ -55,7 +55,7 @@ with gr.Blocks() as demo:
             value="seedance-2.0-fast",
             label="Generation Model",
         )
-        duration = gr.Slider(minimum=3, maximum=15, step=1, value=8, label="Duration (seconds)")
+        duration = gr.Slider(minimum=3, maximum=60, step=1, value=8, label="Total Ad Duration (seconds)")
 
     with gr.Row():
         aspect_ratio = gr.Dropdown(
