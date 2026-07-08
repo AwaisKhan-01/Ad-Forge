@@ -55,16 +55,18 @@ def _generate_single_segment(model: dict, prompt: str, duration: int, aspect_rat
 def generate_video(model_id: str, video_url: str, local_video_path: str,
                     breakdown: str, requested_changes: str,
                     total_duration: int, aspect_ratio: str = "auto",
-                    resolution: str = "720p") -> str:
-    """Plans segments, generates each with continuity, stitches into final ad."""
+                    resolution: str = "720p", user_image_urls: list[str] = None,
+                    user_image_note: str = "") -> str:
     model = MODELS[model_id]
     segment_durations = plan_segments(total_duration, model)
-    final_prompt = fuse_prompt(breakdown, requested_changes)
+    combined_changes = f"{requested_changes}. {user_image_note}".strip()
+    final_prompt = fuse_prompt(breakdown, combined_changes)
 
-    all_frames = []
+    all_frames = list(user_image_urls or [])
     if model["input_type"] == "images":
-        all_frames = extract_frames(local_video_path, count=min(model["max_images"], 8))
-        all_frames = [upload_video(p) for p in all_frames]
+        extracted = extract_frames(local_video_path, count=min(model["max_images"] - len(all_frames), 8))
+        all_frames += [upload_video(p) for p in extracted]
+    # rest of function unchanged, but pass all_frames instead of the old extracted-only list
 
     generated_paths = []
     continuity_frame_url = None
