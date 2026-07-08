@@ -1,4 +1,4 @@
-"""Orchestrates multi-segment generation across models, with continuity, vision-grounded prompts, and stitching."""
+"""Orchestrates multi-segment generation across models, with continuity, vision-grounded prompts, stitching, and cost tracking."""
 import fal_client
 import requests
 import os
@@ -11,12 +11,12 @@ from app.pipeline.frame_extractor import extract_frames_in_range, extract_last_f
 from app.pipeline.uploader import upload_video
 from app.pipeline.segment_planner import plan_segments
 from app.pipeline.stitcher import stitch_segments
+from app.pipeline.cost_tracker import CostTracker
 
 SEGMENTS_DIR = "segments"
 
 
 def _download_result(url: str) -> str:
-    """Downloads a generated segment locally so its last frame can be extracted for continuity."""
     os.makedirs(SEGMENTS_DIR, exist_ok=True)
     path = os.path.join(SEGMENTS_DIR, f"{uuid.uuid4()}.mp4")
     r = requests.get(url, timeout=120)
@@ -28,7 +28,6 @@ def _download_result(url: str) -> str:
 def _generate_single_segment(model: dict, prompt: str, duration: int, aspect_ratio: str,
                               resolution: str, video_url: str = None,
                               image_urls: list[str] = None, continuity_frame_url: str = None) -> str:
-    """Calls the model endpoint once for one segment, returns the hosted output video URL."""
     args = {"prompt": prompt}
 
     if model["input_type"] == "video":
@@ -62,10 +61,11 @@ def generate_video(model_id: str, video_url: str, local_video_path: str,
                     breakdown: str, requested_changes: str,
                     total_duration: int, aspect_ratio: str = "auto",
                     resolution: str = "720p", user_image_urls: list[str] = None,
-                    user_image_note: str = "") -> str:
+                    user_image_note: str = "", cost_tracker: CostTracker = None) -> str:
     """Plans segments, generates each with continuity + vision-grounded prompts, stitches into final ad."""
     model = MODELS[model_id]
     segment_durations = plan_segments(total_duration, model)
+    tracker = cost_tracker or CostTracker()
 
     combined_changes = requested_changes
     if user_image_note:
@@ -76,13 +76,12 @@ def generate_video(model_id: str, video_url: str, local_video_path: str,
 
     generated_paths = []
     continuity_frame_url = None
-    time_cursor = 0.0  # tracks position within the SOURCE reference video per segment
+    time_cursor = 0.0
 
     for i, seg_duration in enumerate(segment_durations):
-        segment_reference_images = list(user_images)  # user images apply to every segment
+        segment_reference_images = list(user_images)
 
         if model["input_type"] == "images":
-            # Map this segment's slice proportionally onto the source video's timeline
             proportion = seg_duration / total_duration
             slice_start = time_cursor
             slice_end = min(time_cursor + proportion * source_duration, source_duration)
@@ -94,12 +93,14 @@ def generate_video(model_id: str, video_url: str, local_video_path: str,
             )
             segment_reference_images += [upload_video(p) for p in extracted_paths]
 
-            # Ground the prompt in what these frames ACTUALLY show, not invented content
             captions = caption_frames(segment_reference_images)
+            tracker.caption_calls += len(segment_reference_images)
             final_prompt = fuse_prompt_images(captions, combined_changes)
+            tracker.add_fusion_call()
 
         else:
             final_prompt = fuse_prompt(breakdown, combined_changes, model_input_type="video")
+            tracker.add_fusion_call()
 
         if i == 0:
             seg_prompt = f"Recreate @Video1's structure. {final_prompt}" if model["input_type"] == "video" else final_prompt
@@ -116,6 +117,7 @@ def generate_video(model_id: str, video_url: str, local_video_path: str,
             image_urls=segment_reference_images,
             continuity_frame_url=continuity_frame_url,
         )
+        tracker.add_segment(model_id, seg_duration, resolution)
 
         local_seg_path = _download_result(output_url)
         generated_paths.append(local_seg_path)
