@@ -6,7 +6,7 @@ import uuid
 
 from app.pipeline.fusion import fuse_prompt
 from app.pipeline.model_registry import MODELS
-from app.pipeline.frame_extractor import extract_frames, extract_last_frame
+from app.pipeline.frame_extractor import extract_frames_in_range, extract_last_frame, _get_duration
 from app.pipeline.uploader import upload_video
 from app.pipeline.segment_planner import plan_segments
 from app.pipeline.stitcher import stitch_segments
@@ -71,24 +71,34 @@ def generate_video(model_id: str, video_url: str, local_video_path: str,
         combined_changes = f"{requested_changes}. {user_image_note}".strip(". ")
 
     user_images = list(user_image_urls or [])
-    extracted_frame_urls = []
-    if model["input_type"] == "images":
-        remaining_slots = max(model["max_images"] - len(user_images), 1)
-        extracted_paths = extract_frames(local_video_path, count=min(remaining_slots, 8))
-        extracted_frame_urls = [upload_video(p) for p in extracted_paths]
-
-    base_reference_images = user_images + extracted_frame_urls
-
-    final_prompt = fuse_prompt(
-        breakdown, combined_changes,
-        model_input_type=model["input_type"],
-        num_images=len(base_reference_images),
-    )
+    source_duration = _get_duration(local_video_path) if model["input_type"] == "images" else 0
 
     generated_paths = []
     continuity_frame_url = None
+    time_cursor = 0.0  # tracks position within the SOURCE reference video per segment
 
     for i, seg_duration in enumerate(segment_durations):
+        segment_reference_images = list(user_images)  # user images apply to every segment
+
+        if model["input_type"] == "images":
+            # Map this segment's slice proportionally onto the source video's timeline
+            proportion = seg_duration / total_duration
+            slice_start = time_cursor
+            slice_end = min(time_cursor + proportion * source_duration, source_duration)
+            time_cursor = slice_end
+
+            remaining_slots = max(model["max_images"] - len(user_images), 1)
+            extracted_paths = extract_frames_in_range(
+                local_video_path, slice_start, slice_end, count=min(remaining_slots, 8)
+            )
+            segment_reference_images += [upload_video(p) for p in extracted_paths]
+
+        final_prompt = fuse_prompt(
+            breakdown, combined_changes,
+            model_input_type=model["input_type"],
+            num_images=len(segment_reference_images),
+        )
+
         if i == 0:
             seg_prompt = f"Recreate @Video1's structure. {final_prompt}" if model["input_type"] == "video" else final_prompt
         else:
@@ -101,7 +111,7 @@ def generate_video(model_id: str, video_url: str, local_video_path: str,
             aspect_ratio=aspect_ratio,
             resolution=resolution,
             video_url=video_url if model["input_type"] == "video" else None,
-            image_urls=base_reference_images,
+            image_urls=segment_reference_images,
             continuity_frame_url=continuity_frame_url,
         )
 
