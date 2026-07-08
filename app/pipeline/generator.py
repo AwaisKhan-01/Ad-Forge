@@ -28,21 +28,26 @@ def _generate_single_segment(model: dict, prompt: str, duration: int, aspect_rat
                               resolution: str, video_url: str = None,
                               image_urls: list[str] = None, continuity_frame_url: str = None) -> str:
     """Calls the model endpoint once for one segment, returns the hosted output video URL."""
-    args = {"prompt": prompt, "duration": str(duration) if model["input_type"] == "video" else duration}
+    args = {"prompt": prompt}
 
     if model["input_type"] == "video":
+        args["duration"] = str(duration)
         args["video_urls"] = [video_url]
+        combined_images = list(image_urls or [])
         if continuity_frame_url:
-            args["image_urls"] = [continuity_frame_url]
+            combined_images = [continuity_frame_url] + combined_images
+        if combined_images:
+            args["image_urls"] = combined_images[: model["max_images"]]
         if aspect_ratio in model["aspect_ratios"]:
             args["aspect_ratio"] = aspect_ratio
         args["resolution"] = resolution
 
     elif model["input_type"] == "images":
-        imgs = list(image_urls or [])
+        args["duration"] = duration
+        combined_images = list(image_urls or [])
         if continuity_frame_url:
-            imgs = [continuity_frame_url] + imgs
-        args["image_urls"] = imgs[: model["max_images"]]
+            combined_images = [continuity_frame_url] + combined_images
+        args["image_urls"] = combined_images[: model["max_images"]]
         args["aspect_ratio"] = aspect_ratio if aspect_ratio in model["aspect_ratios"] else "16:9"
 
     result = fal_client.subscribe(model["endpoint"], arguments=args)
@@ -57,26 +62,37 @@ def generate_video(model_id: str, video_url: str, local_video_path: str,
                     total_duration: int, aspect_ratio: str = "auto",
                     resolution: str = "720p", user_image_urls: list[str] = None,
                     user_image_note: str = "") -> str:
+    """Plans segments, generates each with continuity, stitches into final ad."""
     model = MODELS[model_id]
     segment_durations = plan_segments(total_duration, model)
-    combined_changes = f"{requested_changes}. {user_image_note}".strip()
-    final_prompt = fuse_prompt(breakdown, combined_changes)
 
-    all_frames = list(user_image_urls or [])
+    combined_changes = requested_changes
+    if user_image_note:
+        combined_changes = f"{requested_changes}. {user_image_note}".strip(". ")
+
+    user_images = list(user_image_urls or [])
+    extracted_frame_urls = []
     if model["input_type"] == "images":
-        extracted = extract_frames(local_video_path, count=min(model["max_images"] - len(all_frames), 8))
-        all_frames += [upload_video(p) for p in extracted]
-    # rest of function unchanged, but pass all_frames instead of the old extracted-only list
+        remaining_slots = max(model["max_images"] - len(user_images), 1)
+        extracted_paths = extract_frames(local_video_path, count=min(remaining_slots, 8))
+        extracted_frame_urls = [upload_video(p) for p in extracted_paths]
+
+    base_reference_images = user_images + extracted_frame_urls
+
+    final_prompt = fuse_prompt(
+        breakdown, combined_changes,
+        model_input_type=model["input_type"],
+        num_images=len(base_reference_images),
+    )
 
     generated_paths = []
     continuity_frame_url = None
 
     for i, seg_duration in enumerate(segment_durations):
-        seg_prompt = final_prompt
-        if i > 0:
-            seg_prompt = f"Continue directly from the previous scene (@Image1 = last frame). {final_prompt}"
-        elif model["input_type"] == "video":
-            seg_prompt = f"Recreate @Video1's structure. {final_prompt}"
+        if i == 0:
+            seg_prompt = f"Recreate @Video1's structure. {final_prompt}" if model["input_type"] == "video" else final_prompt
+        else:
+            seg_prompt = f"Continue directly from the previous scene. {final_prompt}"
 
         output_url = _generate_single_segment(
             model=model,
@@ -85,7 +101,7 @@ def generate_video(model_id: str, video_url: str, local_video_path: str,
             aspect_ratio=aspect_ratio,
             resolution=resolution,
             video_url=video_url if model["input_type"] == "video" else None,
-            image_urls=all_frames if model["input_type"] == "images" else None,
+            image_urls=base_reference_images,
             continuity_frame_url=continuity_frame_url,
         )
 
