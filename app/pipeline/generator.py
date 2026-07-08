@@ -1,10 +1,11 @@
-"""Orchestrates multi-segment generation across models, with continuity and stitching."""
+"""Orchestrates multi-segment generation across models, with continuity, vision-grounded prompts, and stitching."""
 import fal_client
 import requests
 import os
 import uuid
 
-from app.pipeline.fusion import fuse_prompt
+from app.pipeline.fusion import fuse_prompt, fuse_prompt_images
+from app.pipeline.frame_captioner import caption_frames
 from app.pipeline.model_registry import MODELS
 from app.pipeline.frame_extractor import extract_frames_in_range, extract_last_frame, _get_duration
 from app.pipeline.uploader import upload_video
@@ -62,7 +63,7 @@ def generate_video(model_id: str, video_url: str, local_video_path: str,
                     total_duration: int, aspect_ratio: str = "auto",
                     resolution: str = "720p", user_image_urls: list[str] = None,
                     user_image_note: str = "") -> str:
-    """Plans segments, generates each with continuity, stitches into final ad."""
+    """Plans segments, generates each with continuity + vision-grounded prompts, stitches into final ad."""
     model = MODELS[model_id]
     segment_durations = plan_segments(total_duration, model)
 
@@ -93,11 +94,12 @@ def generate_video(model_id: str, video_url: str, local_video_path: str,
             )
             segment_reference_images += [upload_video(p) for p in extracted_paths]
 
-        final_prompt = fuse_prompt(
-            breakdown, combined_changes,
-            model_input_type=model["input_type"],
-            num_images=len(segment_reference_images),
-        )
+            # Ground the prompt in what these frames ACTUALLY show, not invented content
+            captions = caption_frames(segment_reference_images)
+            final_prompt = fuse_prompt_images(captions, combined_changes)
+
+        else:
+            final_prompt = fuse_prompt(breakdown, combined_changes, model_input_type="video")
 
         if i == 0:
             seg_prompt = f"Recreate @Video1's structure. {final_prompt}" if model["input_type"] == "video" else final_prompt

@@ -19,48 +19,35 @@ Rules:
 - Output ONLY the final brief. No preamble, no labels, no explanation."""
 
 FUSION_INSTRUCTIONS_IMAGES = """You are a video ad director working with an image-to-video generator that
-receives {n} reference images, in order, tagged @Image1 through @Image{n}. You are given:
-1. A "Moment 1, Moment 2..." breakdown of a reference ad, each moment matching one of these images in order.
+receives {n} reference images, in order, tagged #Image1 through #Image{n}. You are given:
+1. The ACTUAL factual caption of each image (this is ground truth — do not contradict it).
 2. Changes the user wants applied.
 
 Write ONE final director-level prompt, 100-180 words, that:
-- Explicitly references @Image1 through @Image{n} in sequence, describing the action and transition
-  happening AT and BETWEEN each one, so the generator understands the full narrative arc across all images,
-  not just each image in isolation.
-- Applies the user's requested changes, which ALWAYS override the original mood/subject where they conflict.
+- References #Image1 through #Image{n} in sequence, describing ONLY what each caption actually shows,
+  plus the action/transition happening between them.
+- Applies the user's requested changes, which override mood/subject where they conflict with the captions.
 - Includes a concrete audio direction line (ambient sound, music mood, or voiceover tone).
 - Includes explicit photorealism qualifiers (lens type, natural motion, realistic lighting, film-like texture).
-- Does NOT include any on-screen text, logos, or brand names from the breakdown.
+- Explicitly states: no fade-in or fade-out, full content visible at the very first and last frame.
+- Does NOT include any on-screen text, logos, or brand names.
 - Output ONLY the final prompt. No preamble, no labels, no explanation."""
 
 
-def fuse_prompt(breakdown: str, requested_changes: str, model_input_type: str = "video",
-                 num_images: int = 0) -> str:
-    """Builds the final generation prompt, branching by whether the target model uses video or image references."""
+def fuse_prompt_images(image_captions: list[str], requested_changes: str) -> str:
+    """Fusion for image-reference models — grounded in real per-frame captions."""
     if not requested_changes.strip():
         requested_changes = "No specific changes requested — recreate faithfully."
 
-    user_prompt = (
-        f"REFERENCE BREAKDOWN:\n{breakdown}\n\n"
-        f"REQUESTED CHANGES:\n{requested_changes}"
-    )
-
-    if model_input_type == "images":
-        system_prompt = FUSION_INSTRUCTIONS_IMAGES.format(n=max(num_images, 1))
-    else:
-        system_prompt = FUSION_INSTRUCTIONS_VIDEO
+    captions_text = "\n".join(f"#Image{i+1}: {cap}" for i, cap in enumerate(image_captions))
+    user_prompt = f"IMAGE CAPTIONS:\n{captions_text}\n\nREQUESTED CHANGES:\n{requested_changes}"
+    system_prompt = FUSION_INSTRUCTIONS_IMAGES.format(n=len(image_captions))
 
     result = fal_client.subscribe(
         "fal-ai/any-llm",
-        arguments={
-            "model": FUSION_MODEL,
-            "system_prompt": system_prompt,
-            "prompt": user_prompt,
-        },
+        arguments={"model": FUSION_MODEL, "system_prompt": system_prompt, "prompt": user_prompt},
     )
-
     output = result.get("output")
     if not output:
         raise RuntimeError("Fusion step returned no output.")
-
     return output.strip()
