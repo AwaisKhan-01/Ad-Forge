@@ -13,7 +13,6 @@ def _run_pass_1_macro_strategy(video_url: str, target_duration: int) -> str:
     """PASS 1: Macro Strategy & Dynamic Pacing Calculation."""
     print(f"\n[AGENCY PASS 1] Analyzing reference ad structural psychology for a {target_duration}s target...")
     
-    # Dynamic math anchor: forces the VLM to generate a number scaled to the user's duration
     example_count = max(3, target_duration // 4) 
     
     prompt = f"""Watch this reference video. Extract the core marketing architecture. Do NOT list specific product assets.
@@ -50,7 +49,6 @@ def _run_pass_2_copywriter(video_url: str, macro_strategy: str, target_duration:
     
     directive_text = f"USER CREATIVE DIRECTIVE: {creative_directive if creative_directive else 'Direct Adaptation.'}"
 
-    # --- DIEGETIC AUDIO ROUTING ---
     if "No Voiceover" in production_type:
         audio_rule = "1. NO SPOKEN VOICEOVER. Write short, punchy ON-SCREEN TEXT CARDS (max 5 words each)."
         format_instructions = "On-Screen Text: (Write sequential text cards)\nMusic Track: (Style)\nTimeline: Split pacing evenly."
@@ -99,7 +97,6 @@ def _run_pass_3_video_spotter(video_url: str, optimized_timeline: str, exact_sce
     audio_split = optimized_timeline.split('Timeline:')
     master_audio = audio_split[0].strip() if len(audio_split) > 0 else optimized_timeline
     
-    # --- ACTOR PERFORMANCE SHIELDING ---
     if "Motion Graphic" in production_type:
         audio_label = "SFX:"
         diegetic_rule = ""
@@ -127,7 +124,7 @@ OUTPUT EXACTLY IN THIS FORMAT:
 {master_audio}
 
 SCENE 1
-Timestamp: (Look at the ORIGINAL REFERENCE VIDEO. When does a visually similar shot occur? Write that exact timecode here, e.g., 00:12 - 00:15)
+Timestamp: Auto-Mapped
 Visual: (Dense physical description)
 Motion: (Camera movement description)
 {audio_label} (Audio cues for this scene)
