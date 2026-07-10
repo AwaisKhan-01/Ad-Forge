@@ -14,6 +14,7 @@ if not FAL_KEY:
 # Model endpoints (pin exact model paths so upgrades are deliberate, not silent)
 NEMOTRON_MODEL = "nvidia/nemotron-3-nano-omni/video"
 SEEDANCE_MODEL = "bytedance/seedance-2.0/fast/reference-to-video"
+IMAGE_EDIT_MODEL = "fal-ai/nano-banana-2/edit"
 
 # Limits
 MAX_VIDEO_DURATION_SEC = 120  # Nemotron's hard cap
