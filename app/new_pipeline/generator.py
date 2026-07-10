@@ -60,14 +60,13 @@ def generate_final_video(storyboard_frames: List[Dict], final_instructions: str,
     scene_durations = plan_segments(total_duration, total_scenes)
     is_motion_graphic = "Motion Graphic" in production_type
          
-    # --- ACOUSTIC ROUTING PARSER (UPDATED) ---
+    # --- ACOUSTIC ROUTING PARSER ---
     if is_motion_graphic:
         match_music = re.search(r"Music & SFX:\s*(.*?)(?=\n---|\nTimeline:|\nSCENE|\Z)", raw_script_text, re.DOTALL | re.IGNORECASE)
         music_style = match_music.group(1).strip() if match_music else "Energetic electronic motion graphics track."
         vo_words = []
         words_per_scene = 0
     else:
-        # Check for Dialogue OR Voiceover tags seamlessly
         match_audio = re.search(r"(?:Dialogue|Voiceover):\s*(.*?)(?=\n(?:Music|Music Track):|\n---|\nTimeline:|\nSCENE|\Z)", raw_script_text, re.DOTALL | re.IGNORECASE)
         match_music = re.search(r"(?:Music|Music Track):\s*(.*?)(?=\n---|\nTimeline:|\nSCENE|\Z)", raw_script_text, re.DOTALL | re.IGNORECASE)
         
@@ -76,7 +75,6 @@ def generate_final_video(storyboard_frames: List[Dict], final_instructions: str,
         
         vo_words = full_audio_script.split()
         words_per_scene = max(1, len(vo_words) // total_scenes) if total_scenes > 0 else 0
-    # -----------------------------------------
 
     generated_paths = []
     continuity_url = None
@@ -119,7 +117,6 @@ def generate_final_video(storyboard_frames: List[Dict], final_instructions: str,
                 
             scene_vo = " ".join(vo_words[s_word:e_word]).strip()
             if scene_vo:
-                # Dynamically tag behavior framework based on active delivery method
                 label_intent = "dialogue performance" if "On-Screen Actor" in production_type else "narrative pacing focus"
                 isolated_prompt += f"Visual tracking and actor lip movement must align with this {label_intent}: '{scene_vo}'. "
                 
@@ -128,9 +125,13 @@ def generate_final_video(storyboard_frames: List[Dict], final_instructions: str,
         if idx == total_scenes - 1 and final_instructions:
             isolated_prompt += f" FINAL OUTRO DIRECTIVE: {final_instructions}"
 
+        # --- THE FIX ---
+        # Safely casts the computed duration to an exact integer to satisfy Pydantic schema validation.
+        safe_integer_duration = max(1, int(round(seg_duration)))
+
         args = {
             "prompt": isolated_prompt.strip(), 
-            "duration": f"{seg_duration:.1f}", 
+            "duration": safe_integer_duration, 
             "aspect_ratio": aspect_ratio,
             "image_urls": packed_images[:model.get("max_images", 9)]
         }
@@ -138,7 +139,7 @@ def generate_final_video(storyboard_frames: List[Dict], final_instructions: str,
         if model.get("input_type") == "video": 
             args["resolution"] = resolution
         
-        print(f"\n--- Generating Isolated Scene {idx+1}/{total_scenes} ({seg_duration:.1f}s) ---")
+        print(f"\n--- Generating Isolated Scene {idx+1}/{total_scenes} ({safe_integer_duration}s requested) ---")
         print(f"Executing Prompt: {args['prompt']}")
         
         result = fal_client.subscribe(model["endpoint"], arguments=args)

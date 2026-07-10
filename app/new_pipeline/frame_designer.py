@@ -1,6 +1,6 @@
 """
 Parses text, extracts keyframes, and composites them in PARALLEL.
-Features Smart Asset Binding, Strict Anti-Text Shielding, and Mathematical Time Slicing.
+Features Semantic Time Extraction and Strict Asset Binding.
 Located in: app/new_pipeline/frame_designer.py
 """
 import os
@@ -15,19 +15,22 @@ from app.pipeline.uploader import upload_video
 IMAGE_EDIT_MODEL = "fal-ai/nano-banana-2/edit"
 FRAMES_DIR = "frames"
 
-def get_video_duration(video_path: str) -> float:
-    """Extracts the exact total duration of the source video in seconds using ffprobe."""
-    cmd = [
-        "ffprobe", "-v", "error", "-show_entries",
-        "format=duration", "-of",
-        "default=noprint_wrappers=1:nokey=1", video_path
-    ]
+def parse_timestamp_to_seconds(ts_str: str) -> float:
+    """Parses semantic timestamps written by the VLM into an exact extraction second."""
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        return float(result.stdout.strip())
+        parts = ts_str.replace(" ", "").split('-')
+        def time_to_sec(t_str):
+            if ':' in t_str:
+                m, s = t_str.split(':')
+                return int(m) * 60 + float(s)
+            return float(t_str)
+        start_sec = time_to_sec(parts[0])
+        if len(parts) > 1:
+            return (start_sec + time_to_sec(parts[1])) / 2.0
+        return start_sec
     except Exception as e:
-        print(f"FFprobe error reading duration (fallback to 15s): {e}")
-        return 15.0
+        print(f"Timestamp parsing error: {e}")
+        return 0.0
 
 def extract_frame(video_path: str, timestamp_sec: float) -> str:
     """Extracts a single frame from the video using FFmpeg."""
@@ -41,9 +44,8 @@ def extract_frame(video_path: str, timestamp_sec: float) -> str:
     return out_path if os.path.exists(out_path) else None
 
 def parse_extracted_scenes(extracted_text: str) -> List[Dict[str, str]]:
-    """Parses the strict VLM output and injects structural math metadata."""
+    """Parses the strict VLM output into dictionaries."""
     scenes = []
-    # Indestructible regex catching any variation, including the new 'Dialogue Focus'
     pattern = re.compile(
         r"SCENE\s+(\d+).*?"
         r"Timestamp:\s*(.*?)(?=Visual:|$).*?"
@@ -61,28 +63,12 @@ def parse_extracted_scenes(extracted_text: str) -> List[Dict[str, str]]:
             "motion": match.group(4).strip(),
             "audio": match.group(5).strip()
         })
-        
-    # Structural Injection: Tell every scene how many total scenes exist for the math calculation
-    total = len(scenes)
-    for s in scenes:
-        s["total_scenes"] = total
-        
     return scenes
 
 def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: str, aspect_ratio: str) -> Dict:
-    """Processes a single scene using mathematically assigned timestamps to guarantee full video coverage."""
-    
-    # --- MATHEMATICAL TIME SLICING ---
-    total_source_duration = get_video_duration(local_video_path)
-    total_scenes = scene.get("total_scenes", 1)
-    scene_num = int(scene.get("scene_number", 1))
-    
-    slice_duration = total_source_duration / total_scenes if total_scenes > 0 else total_source_duration
-    
-    # Calculate the exact midpoint of this scene's structural slice in the original video
-    target_time = ((scene_num - 1) * slice_duration) + (slice_duration / 2.0)
-    print(f"[EXTRACTING] Scene {scene_num}/{total_scenes} -> Target Timecode: {target_time:.2f}s (Source Length: {total_source_duration:.2f}s)")
-    # ---------------------------------
+    """Processes a single scene using exact semantic timestamps."""
+    target_time = parse_timestamp_to_seconds(scene['timestamp'])
+    print(f"[EXTRACTING] Scene {scene.get('scene_number')} -> Target Timecode: {target_time:.2f}s")
     
     frame_path = extract_frame(local_video_path, target_time)
     
@@ -95,25 +81,25 @@ def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: 
     image_urls = [base_frame_url]
     visual_text = scene['visual_prompt']
     
-    # Strict Anti-Text Shielding
     design_prompt = (
         f"PHOTOREALISTIC COMPOSITION. CRITICAL: DO NOT GENERATE ANY TEXT, WORDS, OR TYPOGRAPHY.\n"
         f"SCENE: {visual_text}\n"
         f"- #Image1 is the base environment.\n"
     )
     
-    # Smart Asset Binding Logic
+    # --- STRICT ASSET BINDING ---
     assets_injected = False
     if asset_urls:
         for idx, url in enumerate(asset_urls):
-            asset_tag = f"#Image{idx + 2}" # Offset by 2 since Image1 is the base frame
+            asset_tag = f"#Image{idx + 2}" 
             if asset_tag.lower() in visual_text.lower():
                 image_urls.append(url)
-                design_prompt += f"- {asset_tag} is a core visual subject. Seamlessly integrate its exact features into the scene.\n"
+                design_prompt += f"- {asset_tag} is the core visual subject. You MUST seamlessly replace the original actor/subject with {asset_tag}.\n"
                 assets_injected = True
                 
     if not assets_injected:
         design_prompt += "Enhance this scene to be highly photorealistic while maintaining the core base composition. Ignore external tags if none apply."
+    # ----------------------------
     
     args = {"prompt": design_prompt, "image_urls": image_urls, "aspect_ratio": aspect_ratio}
     
@@ -127,7 +113,7 @@ def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: 
     return scene
 
 def generate_storyboard_frames(extracted_text: str, uploaded_assets: List[str], local_video_path: str, aspect_ratio: str = "9:16") -> List[Dict]:
-    """Pass 3 Orchestrator: Computes smart bindings and mathematical time slicing."""
+    """Pass 3 Orchestrator"""
     scenes = parse_extracted_scenes(extracted_text)
     if not scenes:
         raise ValueError("Could not parse scenes. Check VLM output format.")
@@ -139,8 +125,6 @@ def generate_storyboard_frames(extracted_text: str, uploaded_assets: List[str], 
             asset_urls.append(url)
             
     storyboard_results = []
-    
-    # Run API calls concurrently
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         futures = []
         for scene in scenes:
@@ -149,6 +133,5 @@ def generate_storyboard_frames(extracted_text: str, uploaded_assets: List[str], 
         for future in concurrent.futures.as_completed(futures):
             storyboard_results.append(future.result())
             
-    # CRITICAL: Re-sort the flipbook into sequence since threads finish out of order
     storyboard_results.sort(key=lambda x: int(x["scene_number"]))
     return storyboard_results
