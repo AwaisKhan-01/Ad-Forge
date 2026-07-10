@@ -1,6 +1,7 @@
 """
 Gradio UI for AdForge: Enterprise Dashboard.
 Features a tabbed workflow, professional CSS, and decoupled logic.
+Located in: app/main.py
 """
 import gradio as gr
 from app.pipeline.downloader import download_video
@@ -36,12 +37,10 @@ def step1_download(url):
     return local_path, gr.update(interactive=True)
 
 def step2_extract_scenes(local_video_path, creative_directive, target_duration, production_type):
-    """Now purely passes user intent to the backend. No hardcoded math."""
     if not local_video_path:
         return "Error: Please download a video first."
     try:
         hosted_video_url = upload_video(local_video_path)
-        # Note: exact_scenes math is removed. The analyzer handles it now.
         extracted_text = analyze_and_extract_scenes(
             video_url=hosted_video_url, 
             target_duration=int(target_duration),
@@ -125,7 +124,6 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
     state_storyboard_frames = gr.State()
     
     with gr.Tabs():
-        # TAB 1: SETUP & ASSETS
         with gr.TabItem("1. Strategy & Assets"):
             with gr.Row():
                 with gr.Column(scale=1, elem_classes="panel-box"):
@@ -135,7 +133,15 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
                     preview_video = gr.Video(label="Source Video", height=300)
                     
                     gr.Markdown("### ⚙️ Production Settings")
-                    production_type = gr.Dropdown(choices=["Narrative Ad (Voiceover focused)", "Narrative Ad (No Voiceover - Text/Music focused)", "Motion Graphic (SFX & Music focused)"], value="Narrative Ad (Voiceover focused)", label="Format Variant")
+                    # --- THE FIX: ADDING THE ON-SCREEN ACTOR VARIANT ---
+                    production_choices = [
+                        "Narrative Ad (On-Screen Actor / Dialogue)", 
+                        "Narrative Ad (Voiceover focused)", 
+                        "Narrative Ad (No Voiceover - Text/Music focused)", 
+                        "Motion Graphic (SFX & Music focused)"
+                    ]
+                    production_type = gr.Dropdown(choices=production_choices, value="Narrative Ad (On-Screen Actor / Dialogue)", label="Format Variant")
+                    # ----------------------------------------------------
                     duration_choice = gr.Slider(minimum=3, maximum=60, step=1, value=15, label="Target Duration (sec)")
                     
                 with gr.Column(scale=1, elem_classes="panel-box"):
@@ -148,7 +154,6 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
             with gr.Row(elem_classes="panel-box"):
                 extracted_prompts = gr.Textbox(label="AI Strategy & Dynamic Script (Editable)", lines=12, interactive=True)
                 
-        # TAB 2: STORYBOARD ENGINE
         with gr.TabItem("2. Storyboard Engine"):
             with gr.Row(elem_classes="panel-box"):
                 with gr.Column(scale=1):
@@ -163,7 +168,6 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
                 with gr.Column(scale=3):
                     storyboard_gallery = gr.Gallery(label="Composited Storyboard", columns=3, height=600)
                     
-        # TAB 3: FINAL RENDER
         with gr.TabItem("3. Final Render"):
             with gr.Row(elem_classes="panel-box"):
                 with gr.Column(scale=1):
@@ -178,14 +182,9 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
 
     # WIRING
     btn_download.click(fn=step1_download, inputs=[ad_url], outputs=[preview_video, btn_extract])
-    
-    # Notice: We no longer pass exact_scenes or model_choice to Pass 1
     btn_extract.click(fn=step2_extract_scenes, inputs=[preview_video, creative_directive, duration_choice, production_type], outputs=[extracted_prompts])
-    
     btn_generate_storyboard.click(fn=step3_generate_storyboard, inputs=[extracted_prompts, uploaded_assets, preview_video, aspect_ratio_choice], outputs=[storyboard_gallery, state_storyboard_frames])
-    
     btn_regen_single.click(fn=step3_regenerate_single, inputs=[extracted_prompts, scene_num_input, uploaded_assets, preview_video, aspect_ratio_choice, state_storyboard_frames], outputs=[storyboard_gallery, state_storyboard_frames])
-    
     btn_generate_final.click(fn=step4_generate_final, inputs=[state_storyboard_frames, final_instructions, model_choice, duration_choice, aspect_ratio_choice, resolution_choice, extracted_prompts, production_type], outputs=[final_video, cost_output])
 
 if __name__ == "__main__":

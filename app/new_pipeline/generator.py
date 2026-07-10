@@ -1,6 +1,6 @@
 """
 Orchestrates video generation using a Temporally Isolated Hard-Cut Strategy.
-Guarantees distinct scene geometry and transitions without latent bleeding.
+Handles dynamic asset mapping and roots acoustic generation (SFX, Voiceover, Dialogue).
 Located in: app/new_pipeline/generator.py
 """
 import os
@@ -57,31 +57,31 @@ def generate_final_video(storyboard_frames: List[Dict], final_instructions: str,
     if not storyboard_frames: 
         raise RuntimeError("No valid scenes found in the storyboard.")
         
-    # Allocate a precise duration block to each individual scene slice
     scene_durations = plan_segments(total_duration, total_scenes)
     is_motion_graphic = "Motion Graphic" in production_type
          
-    # --- ACOUSTIC ROUTING PARSER ---
+    # --- ACOUSTIC ROUTING PARSER (UPDATED) ---
     if is_motion_graphic:
         match_music = re.search(r"Music & SFX:\s*(.*?)(?=\n---|\nTimeline:|\nSCENE|\Z)", raw_script_text, re.DOTALL | re.IGNORECASE)
         music_style = match_music.group(1).strip() if match_music else "Energetic electronic motion graphics track."
         vo_words = []
         words_per_scene = 0
     else:
-        match_vo = re.search(r"Voiceover:\s*(.*?)(?=\nMusic:|\n---|\nTimeline:|\nSCENE|\Z)", raw_script_text, re.DOTALL | re.IGNORECASE)
-        match_music = re.search(r"Music:\s*(.*?)(?=\n---|\nTimeline:|\nSCENE|\Z)", raw_script_text, re.DOTALL | re.IGNORECASE)
-        full_vo = match_vo.group(1).strip() if match_vo else ""
+        # Check for Dialogue OR Voiceover tags seamlessly
+        match_audio = re.search(r"(?:Dialogue|Voiceover):\s*(.*?)(?=\n(?:Music|Music Track):|\n---|\nTimeline:|\nSCENE|\Z)", raw_script_text, re.DOTALL | re.IGNORECASE)
+        match_music = re.search(r"(?:Music|Music Track):\s*(.*?)(?=\n---|\nTimeline:|\nSCENE|\Z)", raw_script_text, re.DOTALL | re.IGNORECASE)
+        
+        full_audio_script = match_audio.group(1).strip() if match_audio else ""
         music_style = match_music.group(1).strip() if match_music else "Upbeat commercial music"
         
-        vo_words = full_vo.split()
+        vo_words = full_audio_script.split()
         words_per_scene = max(1, len(vo_words) // total_scenes) if total_scenes > 0 else 0
-    # -------------------------------
+    # -----------------------------------------
 
     generated_paths = []
     continuity_url = None
     
     # --- TEMPORALLY ISOLATED GENERATION LOOP ---
-    # We step through the commercial scene-by-scene, isolating the model's attention pool.
     for idx, scene in enumerate(storyboard_frames):
         seg_duration = scene_durations[idx]
         
@@ -94,7 +94,6 @@ def generate_final_video(storyboard_frames: List[Dict], final_instructions: str,
         packed_images = []
         current_image_idx = 1
         
-        # 1. Maintain context using the actual last frame of the previous scene
         if continuity_url:
             packed_images.append(continuity_url)
             image_binding_text = f"The environment must seamlessly transition from the visual layout of #Image1. "
@@ -102,15 +101,12 @@ def generate_final_video(storyboard_frames: List[Dict], final_instructions: str,
         else:
             image_binding_text = ""
             
-        # 2. Inject the smart composited asset frame for this scene if it exists
         if img_url:
             packed_images.append(img_url)
             image_binding_text += f"The main visual composition must strictly match the features and subject placement of #Image{current_image_idx}. "
             
-        # 3. Construct a clear, single-shot instruction block
         isolated_prompt = f"{base_cinematography} {image_binding_text}SCENE ACTION: {v_desc}. CAMERA MOVEMENT: {m_desc}. "
         
-        # 4. Bind the correct acoustic sub-intent to the scene
         if is_motion_graphic:
             scene_sfx = scene.get("audio", "").strip()
             if scene_sfx:
@@ -123,11 +119,12 @@ def generate_final_video(storyboard_frames: List[Dict], final_instructions: str,
                 
             scene_vo = " ".join(vo_words[s_word:e_word]).strip()
             if scene_vo:
-                isolated_prompt += f"Visual pacing and actor behavior must match this spoken narrative: '{scene_vo}'. "
+                # Dynamically tag behavior framework based on active delivery method
+                label_intent = "dialogue performance" if "On-Screen Actor" in production_type else "narrative pacing focus"
+                isolated_prompt += f"Visual tracking and actor lip movement must align with this {label_intent}: '{scene_vo}'. "
                 
         isolated_prompt += f"GLOBAL AUDIO BACKDROP: Background music is '{music_style}'."
         
-        # Handle Master Instructions on the final scene block
         if idx == total_scenes - 1 and final_instructions:
             isolated_prompt += f" FINAL OUTRO DIRECTIVE: {final_instructions}"
 
@@ -144,7 +141,6 @@ def generate_final_video(storyboard_frames: List[Dict], final_instructions: str,
         print(f"\n--- Generating Isolated Scene {idx+1}/{total_scenes} ({seg_duration:.1f}s) ---")
         print(f"Executing Prompt: {args['prompt']}")
         
-        # Fire call to the generation engine
         result = fal_client.subscribe(model["endpoint"], arguments=args)
         out_url = result.get("video", {}).get("url")
         
@@ -155,7 +151,6 @@ def generate_final_video(storyboard_frames: List[Dict], final_instructions: str,
         generated_paths.append(local_path)
         cost_tracker.add_segment(model_id, seg_duration, resolution)
         
-        # Extract the precise end-state of this scene to seed the entry-state of the next scene
         continuity_url = upload_video(extract_last_frame(local_path))
             
     print("\n[STITCHING] Compiling isolated scenes natively into master timeline...")
