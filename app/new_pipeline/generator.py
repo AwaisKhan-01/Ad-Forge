@@ -1,6 +1,6 @@
 """
 Orchestrates video generation using a Temporally Isolated Hard-Cut Strategy.
-Handles dynamic asset mapping and roots acoustic generation (SFX, Voiceover, Dialogue).
+Handles dynamic asset mapping and routes acoustic generation (SFX, Voiceover, Dialogue).
 Located in: app/new_pipeline/generator.py
 """
 import os
@@ -126,8 +126,9 @@ def generate_final_video(storyboard_frames: List[Dict], final_instructions: str,
             isolated_prompt += f" FINAL OUTRO DIRECTIVE: {final_instructions}"
 
         # --- THE FIX ---
-        # Safely casts the computed duration to an exact integer to satisfy Pydantic schema validation.
-        safe_integer_duration = max(1, int(round(seg_duration)))
+        # The API schema strictly requires a minimum of 3 seconds per generation.
+        # This clamps any fast-cut math (like 2 seconds) up to the hardware minimum of 3.
+        safe_integer_duration = max(3, int(round(seg_duration)))
 
         args = {
             "prompt": isolated_prompt.strip(), 

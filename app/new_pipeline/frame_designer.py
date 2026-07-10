@@ -1,6 +1,6 @@
 """
 Parses text, extracts keyframes, and composites them in PARALLEL.
-Features Semantic Time Extraction and Strict Asset Binding.
+Features Semantic Time Extraction and Always-On Asset Binding.
 Located in: app/new_pipeline/frame_designer.py
 """
 import os
@@ -66,7 +66,7 @@ def parse_extracted_scenes(extracted_text: str) -> List[Dict[str, str]]:
     return scenes
 
 def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: str, aspect_ratio: str) -> Dict:
-    """Processes a single scene using exact semantic timestamps."""
+    """Processes a single scene using Always-On Asset Binding."""
     target_time = parse_timestamp_to_seconds(scene['timestamp'])
     print(f"[EXTRACTING] Scene {scene.get('scene_number')} -> Target Timecode: {target_time:.2f}s")
     
@@ -78,6 +78,7 @@ def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: 
         
     base_frame_url = upload_video(frame_path)
     
+    # #Image1 is ALWAYS the extracted video frame
     image_urls = [base_frame_url]
     visual_text = scene['visual_prompt']
     
@@ -87,19 +88,23 @@ def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: 
         f"- #Image1 is the base environment.\n"
     )
     
-    # --- STRICT ASSET BINDING ---
-    assets_injected = False
+    # --- THE FIX: ALWAYS-ON ASSET INJECTION ---
     if asset_urls:
         for idx, url in enumerate(asset_urls):
             asset_tag = f"#Image{idx + 2}" 
+            
+            # 1. ALWAYS push the image to the API payload so it is never dropped
+            image_urls.append(url)
+            
+            # 2. Hard Bind: The AI remembered to write the tag
             if asset_tag.lower() in visual_text.lower():
-                image_urls.append(url)
-                design_prompt += f"- {asset_tag} is the core visual subject. You MUST seamlessly replace the original actor/subject with {asset_tag}.\n"
-                assets_injected = True
-                
-    if not assets_injected:
+                design_prompt += f"- STRICT OVERRIDE: {asset_tag} is the primary subject. You MUST flawlessly replace the original actor or product with {asset_tag} in this scene.\n"
+            # 3. Soft Bind: The AI forgot the tag, but we force the edit anyway
+            else:
+                design_prompt += f"- GLOBAL REFERENCE: {asset_tag} is a core brand asset. If any human or main subject appears in this scene, morph their physical likeness to match {asset_tag}.\n"
+    else:
         design_prompt += "Enhance this scene to be highly photorealistic while maintaining the core base composition. Ignore external tags if none apply."
-    # ----------------------------
+    # ------------------------------------------
     
     args = {"prompt": design_prompt, "image_urls": image_urls, "aspect_ratio": aspect_ratio}
     
@@ -119,10 +124,11 @@ def generate_storyboard_frames(extracted_text: str, uploaded_assets: List[str], 
         raise ValueError("Could not parse scenes. Check VLM output format.")
         
     asset_urls = []
-    for asset in uploaded_assets:
-        if asset:
-            url = upload_video(asset) if not asset.startswith("http") else asset
-            asset_urls.append(url)
+    if uploaded_assets:
+        for asset in uploaded_assets:
+            if asset:
+                url = upload_video(asset) if not asset.startswith("http") else asset
+                asset_urls.append(url)
             
     storyboard_results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
