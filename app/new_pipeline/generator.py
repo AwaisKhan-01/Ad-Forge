@@ -1,6 +1,6 @@
 """
 Orchestrates video generation using a Temporally Isolated Hard-Cut Strategy.
-Handles dynamic asset mapping and routes acoustic generation (SFX, Voiceover, Dialogue).
+Features Proportional Time Allocation and Audio-Driven Duration Padding.
 Located in: app/new_pipeline/generator.py
 """
 import os
@@ -18,12 +18,40 @@ from app.new_pipeline.stitcher import stitch_segments_natively
 
 SEGMENTS_DIR = "segments"
 
-def plan_segments(total_duration: int, total_scenes: int) -> List[float]:
-    """Divides the target duration evenly across the extracted scenes."""
-    if total_scenes <= 0:
-        return [float(total_duration)]
-    base_duration = float(total_duration) / total_scenes
-    return [base_duration] * total_scenes
+def get_semantic_duration(ts_str: str) -> float:
+    """Calculates the physical duration in seconds from a semantic timecode string."""
+    try:
+        parts = ts_str.replace(" ", "").split('-')
+        def time_to_sec(t_str):
+            if ':' in t_str:
+                m, s = t_str.split(':')
+                return int(m) * 60 + float(s)
+            return float(t_str)
+        start_sec = time_to_sec(parts[0])
+        if len(parts) > 1:
+            return max(1.0, time_to_sec(parts[1]) - start_sec)
+        return 3.0 
+    except Exception:
+        return 3.0
+
+def plan_dynamic_segments(storyboard_frames: List[Dict], total_target_duration: int) -> List[float]:
+    """Allocates video duration proportionally based on the VLM's source timestamps."""
+    if not storyboard_frames:
+        return []
+    
+    semantic_durations = [get_semantic_duration(s.get("timestamp", "")) for s in storyboard_frames]
+    total_semantic_time = sum(semantic_durations)
+    
+    if total_semantic_time <= 0:
+        base = float(total_target_duration) / len(storyboard_frames)
+        return [base] * len(storyboard_frames)
+        
+    allocated_durations = []
+    for sem_dur in semantic_durations:
+        weight = sem_dur / total_semantic_time
+        allocated_durations.append(weight * float(total_target_duration))
+        
+    return allocated_durations
 
 def sanitize_prompt(raw_desc: str) -> str:
     """Aggressively strips text instructions and editing vocabulary."""
@@ -57,29 +85,15 @@ def generate_final_video(storyboard_frames: List[Dict], final_instructions: str,
     if not storyboard_frames: 
         raise RuntimeError("No valid scenes found in the storyboard.")
         
-    scene_durations = plan_segments(total_duration, total_scenes)
+    scene_durations = plan_dynamic_segments(storyboard_frames, total_duration)
     is_motion_graphic = "Motion Graphic" in production_type
          
-    # --- ACOUSTIC ROUTING PARSER ---
-    if is_motion_graphic:
-        match_music = re.search(r"Music & SFX:\s*(.*?)(?=\n---|\nTimeline:|\nSCENE|\Z)", raw_script_text, re.DOTALL | re.IGNORECASE)
-        music_style = match_music.group(1).strip() if match_music else "Energetic electronic motion graphics track."
-        vo_words = []
-        words_per_scene = 0
-    else:
-        match_audio = re.search(r"(?:Dialogue|Voiceover):\s*(.*?)(?=\n(?:Music|Music Track):|\n---|\nTimeline:|\nSCENE|\Z)", raw_script_text, re.DOTALL | re.IGNORECASE)
-        match_music = re.search(r"(?:Music|Music Track):\s*(.*?)(?=\n---|\nTimeline:|\nSCENE|\Z)", raw_script_text, re.DOTALL | re.IGNORECASE)
-        
-        full_audio_script = match_audio.group(1).strip() if match_audio else ""
-        music_style = match_music.group(1).strip() if match_music else "Upbeat commercial music"
-        
-        vo_words = full_audio_script.split()
-        words_per_scene = max(1, len(vo_words) // total_scenes) if total_scenes > 0 else 0
+    match_music = re.search(r"(?:Music|Music Track|Music & SFX):\s*(.*?)(?=\n---|\nTimeline:|\nSCENE|\Z)", raw_script_text, re.DOTALL | re.IGNORECASE)
+    music_style = match_music.group(1).strip() if match_music else "Upbeat commercial track."
 
     generated_paths = []
     continuity_url = None
     
-    # --- TEMPORALLY ISOLATED GENERATION LOOP ---
     for idx, scene in enumerate(storyboard_frames):
         seg_duration = scene_durations[idx]
         
@@ -105,30 +119,40 @@ def generate_final_video(storyboard_frames: List[Dict], final_instructions: str,
             
         isolated_prompt = f"{base_cinematography} {image_binding_text}SCENE ACTION: {v_desc}. CAMERA MOVEMENT: {m_desc}. "
         
-        if is_motion_graphic:
-            scene_sfx = scene.get("audio", "").strip()
-            if scene_sfx:
-                isolated_prompt += f"Kinetic motion beats synchronized to this SFX profile: '{scene_sfx}'. "
-        else:
-            s_word = idx * words_per_scene
-            e_word = (idx + 1) * words_per_scene
-            if idx == total_scenes - 1:
-                e_word = len(vo_words)
+        scene_audio = scene.get("audio", "").strip()
+        
+        # --- THE FIX: AUDIO-DRIVEN DURATION PADDING ---
+        # Calculates exactly how long it takes a human to speak the assigned text
+        if scene_audio and "On-Screen Actor" in production_type:
+            audio_word_count = len(scene_audio.split())
+            
+            # Ignores placeholder text like "(No specific dialogue)"
+            if "(" in scene_audio and ")" in scene_audio and audio_word_count < 6:
+                required_audio_time = 0.0
+            else:
+                # 0.4 seconds per word (2.5 words/sec) + 1 second of natural breathing room
+                required_audio_time = (audio_word_count * 0.4) + 1.0
                 
-            scene_vo = " ".join(vo_words[s_word:e_word]).strip()
-            if scene_vo:
-                label_intent = "dialogue performance" if "On-Screen Actor" in production_type else "narrative pacing focus"
-                isolated_prompt += f"Visual tracking and actor lip movement must align with this {label_intent}: '{scene_vo}'. "
+            # The clip gets whichever is longer: the visual math, or the time required to speak
+            true_duration = max(seg_duration, required_audio_time)
+            
+            label_intent = "dialogue performance"
+            isolated_prompt += f"Visual tracking and actor lip movement must align perfectly and continuously with this {label_intent}: {scene_audio}. "
+            
+        elif scene_audio and is_motion_graphic:
+            true_duration = seg_duration
+            isolated_prompt += f"Kinetic motion beats synchronized to this SFX profile: '{scene_audio}'. "
+        else:
+            true_duration = seg_duration
+        # ----------------------------------------------
                 
         isolated_prompt += f"GLOBAL AUDIO BACKDROP: Background music is '{music_style}'."
         
         if idx == total_scenes - 1 and final_instructions:
             isolated_prompt += f" FINAL OUTRO DIRECTIVE: {final_instructions}"
 
-        # --- THE FIX ---
-        # The API schema strictly requires a minimum of 3 seconds per generation.
-        # This clamps any fast-cut math (like 2 seconds) up to the hardware minimum of 3.
-        safe_integer_duration = max(3, int(round(seg_duration)))
+        # API Safety Clamp - Final override to ensure it never crashes
+        safe_integer_duration = max(3, int(round(true_duration)))
 
         args = {
             "prompt": isolated_prompt.strip(), 
@@ -151,7 +175,7 @@ def generate_final_video(storyboard_frames: List[Dict], final_instructions: str,
             
         local_path = _download_result(out_url)
         generated_paths.append(local_path)
-        cost_tracker.add_segment(model_id, seg_duration, resolution)
+        cost_tracker.add_segment(model_id, safe_integer_duration, resolution) 
         
         continuity_url = upload_video(extract_last_frame(local_path))
             
