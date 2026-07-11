@@ -81,13 +81,18 @@ def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: 
     visual_text = scene['visual_prompt']
     
     # --- TEXT-ONLY SHIELD ---
-    # If the user uploaded zero images, but the VLM hallucinates an "#Image2" tag,
-    # we scrub the tag entirely so it doesn't confuse the image model.
     if not asset_urls:
         visual_text = re.sub(r'#Image\d+', '', visual_text, flags=re.IGNORECASE).strip()
 
+    # --- DYNAMIC TYPOGRAPHY BAN ---
+    # We drop the ban if the VLM specifically describes text or graphic colors in the scene
+    ban_text = " CRITICAL: DO NOT GENERATE ANY TEXT, WORDS, OR TYPOGRAPHY."
+    trigger_words = ["text", "word", "typography", "font", "color", "red", "pink"]
+    if any(word in visual_text.lower() for word in trigger_words):
+        ban_text = ""
+
     design_prompt = (
-        f"PHOTOREALISTIC COMPOSITION. CRITICAL: DO NOT GENERATE ANY TEXT, WORDS, OR TYPOGRAPHY.\n"
+        f"PHOTOREALISTIC COMPOSITION.{ban_text}\n"
         f"SCENE: {visual_text}\n"
         f"- #Image1 is the base environment.\n"
     )

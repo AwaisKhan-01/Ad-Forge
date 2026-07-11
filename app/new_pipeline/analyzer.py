@@ -78,7 +78,7 @@ You MUST output EXACTLY {exact_scenes} scene blocks.
 
 CRITICAL CREATIVE & ASSET REPLACEMENT PROTOCOL:
 User Directive: "{creative_directive if creative_directive else 'No custom assets'}"
-1. TEXT-BASED OVERRIDE: If the user's directive asks to change a subject or environment (e.g., "replace the man with a panda"), you MUST vividly describe the NEW subject/environment in the 'Visual:' section. Do not describe the original subject.
+1. TEXT-BASED OVERRIDE: If the user's directive asks to change a subject, environment, OR visual styling (like text colors, typography, or overlays), you MUST vividly describe these NEW elements physically inside the 'Visual:' section. Do not just put them in the audio block.
 2. ASSET TAGGING: ONLY if the user implies they uploaded custom images to replace subjects, append the string "#Image2" directly next to the subject in your description.
 
 CRITICAL ALIGNMENT RULES FOR DIFFUSION:
