@@ -8,3 +8,5 @@ venv/
 .DS_Store
 downloads/
 app/pipeline/
+segments/
+frames/
