@@ -1,6 +1,6 @@
 """
 Implements the 3-Pass Agency Architecture.
-Features Semantic Timecoding and Aggressive Asset Injection.
+Features Semantic Timecoding and Smart Text/Asset Replacement Routing.
 Located in: app/new_pipeline/analyzer.py
 """
 import re
@@ -76,13 +76,14 @@ def _run_pass_3_video_spotter(video_url: str, optimized_timeline: str, exact_sce
     prompt = f"""Watch the reference video again. Generate a detailed storyboard matching this timeline.
 You MUST output EXACTLY {exact_scenes} scene blocks.
 
-CRITICAL ASSET REPLACEMENT PROTOCOL:
+CRITICAL CREATIVE & ASSET REPLACEMENT PROTOCOL:
 User Directive: "{creative_directive if creative_directive else 'No custom assets'}"
-If the user's directive asks to replace a person, actor, product, or logo, YOU MUST explicitly type the exact string "#Image2" into the 'Visual:' section of EVERY scene where they appear. 
+1. TEXT-BASED OVERRIDE: If the user's directive asks to change a subject or environment (e.g., "replace the man with a panda"), you MUST vividly describe the NEW subject/environment in the 'Visual:' section. Do not describe the original subject.
+2. ASSET TAGGING: ONLY if the user implies they uploaded custom images to replace subjects, append the string "#Image2" directly next to the subject in your description.
 
 CRITICAL ALIGNMENT RULES FOR DIFFUSION:
-1. SINGLE STATIC SHOT: The 'Visual' description MUST describe only ONE camera shot. NEVER describe multiple actions or cuts within a single scene (e.g., NEVER write "he is on the couch, then moves to the desk"). 
-2. TRUE TIMESTAMPS: Look at the ORIGINAL source video. Find the EXACT timecode where this single static shot begins. Do not invent sequential blocks.
+1. SINGLE STATIC SHOT: The 'Visual' description MUST describe only ONE camera shot. NEVER describe multiple actions or cuts within a single scene. 
+2. TRUE TIMESTAMPS: Look at the ORIGINAL source video. Find the EXACT timecode where this single static shot begins.
 
 OUTPUT EXACTLY IN THIS FORMAT:
 
@@ -91,7 +92,7 @@ OUTPUT EXACTLY IN THIS FORMAT:
 
 SCENE 1
 Timestamp: (Actual source video timecode, e.g., 00:12 - 00:15)
-Visual: (Strictly ONE static visual description. MUST contain #Image2 if replacing)
+Visual: (Strictly ONE static visual description)
 Motion: (Camera movement description)
 {audio_label} (Audio cues for this scene)
 

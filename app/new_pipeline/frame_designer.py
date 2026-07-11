@@ -1,6 +1,6 @@
 """
 Parses text, extracts keyframes, and composites them in PARALLEL.
-Features Start-Anchored Semantic Time Extraction and Always-On Asset Binding.
+Features Start-Anchored Semantic Time Extraction and Text-Driven Image Overrides.
 Located in: app/new_pipeline/frame_designer.py
 """
 import os
@@ -26,10 +26,6 @@ def parse_timestamp_to_seconds(ts_str: str) -> float:
             return float(t_str)
         
         start_sec = time_to_sec(parts[0])
-        
-        # THE FIX: Start-Anchored Extraction
-        # Instead of risking the midpoint missing the cut, we extract exactly 
-        # 0.5 seconds into the scene to guarantee we capture the primary visual.
         return start_sec + 0.5
     except Exception as e:
         print(f"Timestamp parsing error: {e}")
@@ -69,7 +65,7 @@ def parse_extracted_scenes(extracted_text: str) -> List[Dict[str, str]]:
     return scenes
 
 def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: str, aspect_ratio: str) -> Dict:
-    """Processes a single scene using Always-On Asset Binding."""
+    """Processes a single scene supporting both Image Arrays and Text-Only directives."""
     target_time = parse_timestamp_to_seconds(scene['timestamp'])
     print(f"[EXTRACTING] Scene {scene.get('scene_number')} -> Target Timecode: {target_time:.2f}s")
     
@@ -80,10 +76,16 @@ def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: 
         return scene
         
     base_frame_url = upload_video(frame_path)
-    
     image_urls = [base_frame_url]
+    
     visual_text = scene['visual_prompt']
     
+    # --- TEXT-ONLY SHIELD ---
+    # If the user uploaded zero images, but the VLM hallucinates an "#Image2" tag,
+    # we scrub the tag entirely so it doesn't confuse the image model.
+    if not asset_urls:
+        visual_text = re.sub(r'#Image\d+', '', visual_text, flags=re.IGNORECASE).strip()
+
     design_prompt = (
         f"PHOTOREALISTIC COMPOSITION. CRITICAL: DO NOT GENERATE ANY TEXT, WORDS, OR TYPOGRAPHY.\n"
         f"SCENE: {visual_text}\n"
@@ -93,7 +95,6 @@ def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: 
     if asset_urls:
         for idx, url in enumerate(asset_urls):
             asset_tag = f"#Image{idx + 2}" 
-            
             image_urls.append(url)
             
             if asset_tag.lower() in visual_text.lower():
@@ -101,7 +102,9 @@ def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: 
             else:
                 design_prompt += f"- GLOBAL REFERENCE: {asset_tag} is a core brand asset. If any human or main subject appears in this scene, morph their physical likeness to match {asset_tag}.\n"
     else:
-        design_prompt += "Enhance this scene to be highly photorealistic while maintaining the core base composition. Ignore external tags if none apply."
+        # --- TEXT-DRIVEN OVERRIDE ---
+        # Forces the image model to break the original base composition and follow the text
+        design_prompt += "- TEXT-DRIVEN OVERRIDE: Radically transform #Image1 to match the SCENE text above. If the SCENE describes a new subject or environment, you MUST aggressively replace the original subject based purely on the text description.\n"
     
     args = {"prompt": design_prompt, "image_urls": image_urls, "aspect_ratio": aspect_ratio}
     
