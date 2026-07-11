@@ -9,4 +9,5 @@ venv/
 downloads/
 app/pipeline/
 segments/
-frames/
+frames/frames/
+segments/
