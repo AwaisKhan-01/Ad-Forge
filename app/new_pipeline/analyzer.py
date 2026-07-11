@@ -79,8 +79,10 @@ You MUST output EXACTLY {exact_scenes} scene blocks.
 CRITICAL ASSET REPLACEMENT PROTOCOL:
 User Directive: "{creative_directive if creative_directive else 'No custom assets'}"
 If the user's directive asks to replace a person, actor, product, or logo, YOU MUST explicitly type the exact string "#Image2" into the 'Visual:' section of EVERY scene where they appear. 
-Example: "A close up of #Image2 talking to the camera..."
-If you do not write "#Image2", the replacement will fail.
+
+CRITICAL ALIGNMENT RULES FOR DIFFUSION:
+1. SINGLE STATIC SHOT: The 'Visual' description MUST describe only ONE camera shot. NEVER describe multiple actions or cuts within a single scene (e.g., NEVER write "he is on the couch, then moves to the desk"). 
+2. TRUE TIMESTAMPS: Look at the ORIGINAL source video. Find the EXACT timecode where this single static shot begins. Do not invent sequential blocks.
 
 OUTPUT EXACTLY IN THIS FORMAT:
 
@@ -88,8 +90,8 @@ OUTPUT EXACTLY IN THIS FORMAT:
 {master_audio}
 
 SCENE 1
-Timestamp: (Look at the ORIGINAL source video. Write the ACTUAL timecode where this visual occurs, e.g., 00:12 - 00:15. DO NOT compress this to match the target duration.)
-Visual: (Dense physical description. MUST contain #Image2 if replacing an actor/product)
+Timestamp: (Actual source video timecode, e.g., 00:12 - 00:15)
+Visual: (Strictly ONE static visual description. MUST contain #Image2 if replacing)
 Motion: (Camera movement description)
 {audio_label} (Audio cues for this scene)
 

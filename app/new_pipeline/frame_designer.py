@@ -1,6 +1,6 @@
 """
 Parses text, extracts keyframes, and composites them in PARALLEL.
-Features Semantic Time Extraction and Always-On Asset Binding.
+Features Start-Anchored Semantic Time Extraction and Always-On Asset Binding.
 Located in: app/new_pipeline/frame_designer.py
 """
 import os
@@ -16,7 +16,7 @@ IMAGE_EDIT_MODEL = "fal-ai/nano-banana-2/edit"
 FRAMES_DIR = "frames"
 
 def parse_timestamp_to_seconds(ts_str: str) -> float:
-    """Parses semantic timestamps written by the VLM into an exact extraction second."""
+    """Parses semantic timestamps and anchors strictly to the start of the scene."""
     try:
         parts = ts_str.replace(" ", "").split('-')
         def time_to_sec(t_str):
@@ -24,10 +24,13 @@ def parse_timestamp_to_seconds(ts_str: str) -> float:
                 m, s = t_str.split(':')
                 return int(m) * 60 + float(s)
             return float(t_str)
+        
         start_sec = time_to_sec(parts[0])
-        if len(parts) > 1:
-            return (start_sec + time_to_sec(parts[1])) / 2.0
-        return start_sec
+        
+        # THE FIX: Start-Anchored Extraction
+        # Instead of risking the midpoint missing the cut, we extract exactly 
+        # 0.5 seconds into the scene to guarantee we capture the primary visual.
+        return start_sec + 0.5
     except Exception as e:
         print(f"Timestamp parsing error: {e}")
         return 0.0
@@ -78,7 +81,6 @@ def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: 
         
     base_frame_url = upload_video(frame_path)
     
-    # #Image1 is ALWAYS the extracted video frame
     image_urls = [base_frame_url]
     visual_text = scene['visual_prompt']
     
@@ -88,23 +90,18 @@ def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: 
         f"- #Image1 is the base environment.\n"
     )
     
-    # --- THE FIX: ALWAYS-ON ASSET INJECTION ---
     if asset_urls:
         for idx, url in enumerate(asset_urls):
             asset_tag = f"#Image{idx + 2}" 
             
-            # 1. ALWAYS push the image to the API payload so it is never dropped
             image_urls.append(url)
             
-            # 2. Hard Bind: The AI remembered to write the tag
             if asset_tag.lower() in visual_text.lower():
                 design_prompt += f"- STRICT OVERRIDE: {asset_tag} is the primary subject. You MUST flawlessly replace the original actor or product with {asset_tag} in this scene.\n"
-            # 3. Soft Bind: The AI forgot the tag, but we force the edit anyway
             else:
                 design_prompt += f"- GLOBAL REFERENCE: {asset_tag} is a core brand asset. If any human or main subject appears in this scene, morph their physical likeness to match {asset_tag}.\n"
     else:
         design_prompt += "Enhance this scene to be highly photorealistic while maintaining the core base composition. Ignore external tags if none apply."
-    # ------------------------------------------
     
     args = {"prompt": design_prompt, "image_urls": image_urls, "aspect_ratio": aspect_ratio}
     
