@@ -4,6 +4,7 @@ Features a self-correcting Evaluator-Optimizer loop to prevent instruction dilut
 Located in: app/new_pipeline/analyzer.py
 """
 import json
+import re
 import fal_client
 from pydantic import BaseModel, Field, ValidationError
 from typing import List, Optional
@@ -27,7 +28,36 @@ class StoryboardOutput(BaseModel):
     scenes: List[Scene] = Field(..., description="The list of perfectly calculated scenes.")
 
 # ==========================================
-# 2. AGENTIC FUNCTIONS
+# 2. ROBUST JSON EXTRACTOR
+# ==========================================
+def _extract_clean_json(raw_text: str) -> dict:
+    """Intelligently hunts and extracts JSON, ignoring LLM conversational hallucinations."""
+    # First, try to load it straight away
+    try:
+        return json.loads(raw_text.strip())
+    except json.JSONDecodeError:
+        pass
+
+    # Next, strip common markdown wrappers
+    if raw_text.strip().startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?|```$", "", raw_text.strip(), flags=re.IGNORECASE | re.MULTILINE).strip()
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            pass
+            
+    # Finally, use regex to find the outermost brackets (the true JSON block)
+    match = re.search(r'\{.*\}', raw_text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(0))
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"Extracted string is still invalid JSON: {e}")
+            
+    raise RuntimeError("Could not locate any valid JSON structure in the Agent's response.")
+
+# ==========================================
+# 3. AGENTIC FUNCTIONS
 # ==========================================
 def _generate_initial_draft(video_url: str, target_duration: int, creative_directive: str, production_type: str) -> dict:
     """The Director Agent: Attempts to write the perfect JSON storyboard."""
@@ -40,6 +70,7 @@ RULES:
 1. COLOR & STYLING: If the User Directive specifies colors (e.g., "Pinkish Red"), you MUST explicitly write those EXACT color words into the 'visual_prompt' of any scene containing text or modified subjects.
 2. TIMESTAMPS: Extract true timestamps from the reference video.
 3. SINGLE SHOTS: 'visual_prompt' must describe only ONE camera shot per scene.
+4. ESCAPING: NEVER use unescaped double quotes inside your text values. Use single quotes if you need to quote something inside a field.
 
 OUTPUT FORMAT:
 You must output pure JSON that exactly matches this schema:
@@ -68,19 +99,11 @@ You must output pure JSON that exactly matches this schema:
         }
     )
     
-    # Strip markdown formatting if the LLM wraps it in ```json ... ```
-    raw_output = result.get("output", "").strip()
-    if raw_output.startswith("```json"):
-        raw_output = raw_output[7:-3].strip()
-    elif raw_output.startswith("```"):
-        raw_output = raw_output[3:-3].strip()
-        
-    return json.loads(raw_output)
+    return _extract_clean_json(result.get("output", ""))
 
-def _critique_and_revise(draft_json: dict, creative_directive: str, target_duration: int) -> dict:
+def _critique_and_revise(draft_json: dict, creative_directive: str, target_duration: int, video_url: str) -> dict:
     """The Critic Agent: Evaluates the draft against the user's explicit instructions."""
     
-    # If there is no specific creative directive, we can skip the heavy critique
     if not creative_directive:
         return draft_json
         
@@ -92,57 +115,64 @@ DRAFT JSON: {json.dumps(draft_json)}
 TASK: Did the draft successfully incorporate the styling, colors, or subject changes requested in the User Directive into the 'visual_prompt' fields?
 If it failed, rewrite the JSON to forcefully inject the user's specific words (e.g., color names, replacement subjects) into the relevant scenes.
 
-Return ONLY the perfectly corrected JSON matching the original schema. No explanations.
+CRITICAL JSON RULES:
+1. Return ONLY valid JSON. No conversational text.
+2. ESCAPING: NEVER use unescaped double quotes inside your text values. Use single quotes ('like this') if you need to quote something inside a field.
+3. SCHEMA MATCH: Your output MUST perfectly match this structure:
+{{
+  "macro_strategy": "string",
+  "master_audio": "string",
+  "scenes": [
+    {{
+      "scene_number": 1,
+      "timestamp": "00:00 - 00:03",
+      "visual_prompt": "string",
+      "motion": "string",
+      "audio": "string"
+    }}
+  ]
+}}
 """
     result = fal_client.subscribe(
         NEMOTRON_MODEL, 
         arguments={
             "prompt": critique_prompt, 
             "system_prompt": SYSTEM_PROMPT, 
+            "video_url": video_url, 
             "max_tokens": 4096, 
             "temperature": 0.1
         }
     )
     
-    raw_output = result.get("output", "").strip()
-    if raw_output.startswith("```json"):
-        raw_output = raw_output[7:-3].strip()
-    elif raw_output.startswith("```"):
-        raw_output = raw_output[3:-3].strip()
-        
-    return json.loads(raw_output)
+    return _extract_clean_json(result.get("output", ""))
 
 # ==========================================
-# 3. THE EVALUATOR-OPTIMIZER LOOP
+# 4. THE EVALUATOR-OPTIMIZER LOOP
 # ==========================================
 def analyze_and_extract_scenes(video_url: str, target_duration: int, creative_directive: str = "", production_type: str = "Narrative") -> str:
     print("\n[AGENT: DIRECTOR] Drafting initial structured storyboard...")
-    max_retries = 2
+    max_retries = 3 # Increased to 3 to give the loop more breathing room
     attempt = 0
     final_storyboard = None
     
     while attempt < max_retries:
         try:
-            # Step 1: Director writes the draft
             draft_data = _generate_initial_draft(video_url, target_duration, creative_directive, production_type)
             
-            # Step 2: Critic reviews and rewrites if necessary
             if creative_directive:
                 print("[AGENT: CRITIC] Evaluating draft against User Directive...")
-                draft_data = _critique_and_revise(draft_data, creative_directive, target_duration)
+                draft_data = _critique_and_revise(draft_data, creative_directive, target_duration, video_url) 
             
-            # Step 3: Pydantic Validation (The Bouncer)
             final_storyboard = StoryboardOutput(**draft_data)
             print("[SYSTEM] JSON Schema Validation Passed. Storyboard locked.")
             break
             
-        except (json.JSONDecodeError, ValidationError) as e:
-            print(f"[SYSTEM WARNING] Agent output failed schema validation (Attempt {attempt + 1}/{max_retries}). Retrying...")
+        except (json.JSONDecodeError, ValidationError, RuntimeError) as e:
+            print(f"[SYSTEM WARNING] Agent output failed schema validation (Attempt {attempt + 1}/{max_retries}). Error: {e}")
             attempt += 1
             if attempt == max_retries:
-                raise RuntimeError(f"Agentic loop failed to produce valid JSON after {max_retries} attempts. Error: {e}")
+                raise RuntimeError(f"Agentic loop failed to produce valid JSON after {max_retries} attempts.")
 
-    # Step 4: Format the validated Python object back into the readable string UI format
     output_str = f"=== STRATEGY ===\n{final_storyboard.macro_strategy}\n\n=== STORYBOARD ===\n[MASTER AUDIO]\n{final_storyboard.master_audio}\n\n"
     
     for scene in final_storyboard.scenes:
