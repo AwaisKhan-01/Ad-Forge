@@ -6,6 +6,11 @@ Located in: app/new_pipeline/analyzer.py
 import json
 import re
 import subprocess
+from dotenv import load_dotenv
+
+# Run this immediately before fal_client imports to populate os.environ
+load_dotenv() 
+
 import fal_client
 from pydantic import BaseModel, Field, ValidationError
 from typing import List, Optional
@@ -123,7 +128,8 @@ You must output pure JSON that exactly matches this schema:
             "prompt": prompt, 
             "system_prompt": SYSTEM_PROMPT, 
             "model": TARGET_VLM_MODEL,
-            "temperature": 0.2
+            "temperature": 0.2,
+            "reasoning": True
         }
     )
     return _extract_clean_json(result.get("output", ""))
@@ -150,7 +156,8 @@ CRITICAL: ONLY valid JSON. NEVER use unescaped double quotes.
             "prompt": critique_prompt, 
             "system_prompt": SYSTEM_PROMPT, 
             "model": TARGET_VLM_MODEL,
-            "temperature": 0.1
+            "temperature": 0.1,
+            "reasoning": True
         }
     )
     return _extract_clean_json(result.get("output", ""))
