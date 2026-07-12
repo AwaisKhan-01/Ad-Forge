@@ -1,7 +1,6 @@
 """
 Orchestrates video generation using a Temporally Isolated Hard-Cut Strategy.
-Features Proportional Time Allocation and Audio-Driven Duration Padding.
-Optimized for strictly typed Agentic Storyboard inputs.
+Features Proportional Time Allocation and Video Diffusion Prompt Sterilization.
 Located in: app/new_pipeline/generator.py
 """
 import os
@@ -55,9 +54,9 @@ def plan_dynamic_segments(storyboard_frames: List[Dict], total_target_duration: 
     return allocated_durations
 
 def sanitize_prompt(raw_desc: str) -> str:
-    """Aggressively strips editing vocabulary, trusting the Agent's visual descriptions."""
+    """Fallback sanitizer if the Prompt Compiler in Pass 2 failed."""
     clean = re.sub(r'".*?"', '', raw_desc) 
-    bad_words = ["cut to", "cut", "fade", "transition"]
+    bad_words = ["cut to", "cut", "fade", "transition", "audio", "music", "voiceover"]
     for word in bad_words:
         clean = re.sub(rf'(?i)\b{word}\b', '', clean)
     return clean.strip()
@@ -87,11 +86,6 @@ def generate_final_video(storyboard_frames: List[Dict], final_instructions: str,
         
     scene_durations = plan_dynamic_segments(storyboard_frames, total_duration)
     is_motion_graphic = "Motion Graphic" in production_type
-         
-    # --- STRICT AUDIO EXTRACTION ---
-    # We now extract exactly from the Pydantic-formatted [MASTER AUDIO] block
-    match_music = re.search(r"\[MASTER AUDIO\]\n(.*?)(?=\n\nSCENE 1|\Z)", raw_script_text, re.DOTALL | re.IGNORECASE)
-    music_style = match_music.group(1).strip() if match_music else "Upbeat commercial track."
 
     generated_paths = []
     continuity_url = None
@@ -99,32 +93,24 @@ def generate_final_video(storyboard_frames: List[Dict], final_instructions: str,
     for idx, scene in enumerate(storyboard_frames):
         seg_duration = scene_durations[idx]
         
-        # The typography ban is now managed exclusively by frame_designer.py and the text overlays
-        base_cinematography = "High-end cinematic rendering, 8k resolution, professional lighting, highly detailed."
-        
-        v_desc = sanitize_prompt(scene.get("visual_prompt", ""))
+        # --- THE FIX: CONSUMING STERILIZED TAGS ---
+        # We pull the clean tags created by the compiler, or fallback to sanitized text
+        v_desc = scene.get("visual_prompt_sterilized") or sanitize_prompt(scene.get("visual_prompt", ""))
         m_desc = sanitize_prompt(scene.get("motion", ""))
         img_url = scene.get("generated_image_url")
-        
-        packed_images = []
-        current_image_idx = 1
-        
-        if continuity_url:
-            packed_images.append(continuity_url)
-            image_binding_text = f"The environment must seamlessly transition from the visual layout of #Image1. "
-            current_image_idx = 2
-        else:
-            image_binding_text = ""
-            
-        if img_url:
-            packed_images.append(img_url)
-            image_binding_text += f"The main visual composition must strictly match the features, colors, and subject placement of #Image{current_image_idx}. "
-            
-        isolated_prompt = f"{base_cinematography} {image_binding_text}SCENE ACTION: {v_desc}. CAMERA MOVEMENT: {m_desc}. "
-        
         scene_audio = scene.get("audio", "").strip()
         
-        # --- AUDIO-DRIVEN DURATION PADDING ---
+        packed_images = []
+        if continuity_url:
+            packed_images.append(continuity_url)
+        if img_url:
+            packed_images.append(img_url)
+            
+        # We construct a pure, comma-separated visual prompt. NO meta-instructions.
+        isolated_prompt = f"{v_desc}, camera motion: {m_desc}, high-end cinematic rendering, professional lighting, highly detailed"
+        
+        # --- AUDIO-DRIVEN DURATION PADDING (MATH ONLY) ---
+        # We keep the duration math, but we DO NOT feed the dialogue text to the video model
         if scene_audio and "On-Screen Actor" in production_type:
             audio_word_count = len(scene_audio.split())
             
@@ -134,19 +120,18 @@ def generate_final_video(storyboard_frames: List[Dict], final_instructions: str,
                 required_audio_time = (audio_word_count * 0.4) + 1.0
                 
             true_duration = max(seg_duration, required_audio_time)
-            label_intent = "dialogue performance"
-            isolated_prompt += f"Visual tracking and actor lip movement must align perfectly and continuously with this {label_intent}: {scene_audio}. "
+            
+            # Simple, model-friendly tag instead of complex logic
+            isolated_prompt += ", subject speaking naturally, lip sync"
             
         elif scene_audio and is_motion_graphic:
             true_duration = seg_duration
-            isolated_prompt += f"Kinetic motion beats synchronized to this SFX profile: '{scene_audio}'. "
+            isolated_prompt += ", smooth kinetic motion"
         else:
             true_duration = seg_duration
                 
-        isolated_prompt += f"GLOBAL AUDIO BACKDROP: Background music is '{music_style}'."
-        
         if idx == total_scenes - 1 and final_instructions:
-            isolated_prompt += f" FINAL OUTRO DIRECTIVE: {final_instructions}"
+            isolated_prompt += f", {final_instructions}"
 
         safe_integer_duration = max(3, int(round(true_duration)))
 
@@ -161,7 +146,7 @@ def generate_final_video(storyboard_frames: List[Dict], final_instructions: str,
             args["resolution"] = resolution
         
         print(f"\n--- Generating Isolated Scene {idx+1}/{total_scenes} ({safe_integer_duration}s requested) ---")
-        print(f"Executing Prompt: {args['prompt']}")
+        print(f"Cleaned Video Prompt: {args['prompt']}")
         
         result = fal_client.subscribe(model["endpoint"], arguments=args)
         out_url = result.get("video", {}).get("url")
