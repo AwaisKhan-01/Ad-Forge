@@ -1,5 +1,5 @@
 """
-Parses text, extracts keyframes, and composites them in PARALLEL.
+Parses structured text, extracts keyframes, and composites them in PARALLEL.
 Features Start-Anchored Semantic Time Extraction and Text-Driven Image Overrides.
 Located in: app/new_pipeline/frame_designer.py
 """
@@ -43,16 +43,21 @@ def extract_frame(video_path: str, timestamp_sec: float) -> str:
     return out_path if os.path.exists(out_path) else None
 
 def parse_extracted_scenes(extracted_text: str) -> List[Dict[str, str]]:
-    """Parses the strict VLM output into dictionaries."""
+    """
+    Parses the strictly formatted Pydantic output from the Agentic Analyzer.
+    Because the agent guarantees the structure, this parser is fast and exact.
+    """
     scenes = []
+    # Simplified and strict RegEx to match the exact Pydantic reconstruction
     pattern = re.compile(
-        r"SCENE\s+(\d+).*?"
-        r"Timestamp:\s*(.*?)(?=Visual:|$).*?"
-        r"Visual:\s*(.*?)(?=Motion:|$).*?"
-        r"Motion:\s*(.*?)(?=(?:Audio|SFX|Audio Focus|Dialogue Focus):|$).*?"
-        r"(?:Audio|SFX|Audio Focus|Dialogue Focus):\s*(.*?)(?=---|\Z|SCENE)",
+        r"SCENE\s+(\d+)\s*"
+        r"Timestamp:\s*(.*?)\s*"
+        r"Visual:\s*(.*?)\s*"
+        r"Motion:\s*(.*?)\s*"
+        r"Audio:\s*(.*?)(?=\nSCENE|\Z)",
         re.DOTALL | re.IGNORECASE
     )
+    
     matches = pattern.finditer(extracted_text)
     for match in matches:
         scenes.append({
@@ -85,9 +90,10 @@ def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: 
         visual_text = re.sub(r'#Image\d+', '', visual_text, flags=re.IGNORECASE).strip()
 
     # --- DYNAMIC TYPOGRAPHY BAN ---
-    # We drop the ban if the VLM specifically describes text or graphic colors in the scene
     ban_text = " CRITICAL: DO NOT GENERATE ANY TEXT, WORDS, OR TYPOGRAPHY."
-    trigger_words = ["text", "word", "typography", "font", "color", "red", "pink"]
+    trigger_words = ["text", "word", "typography", "font", "color", "red", "pink", "blue", "yellow", "white", "black"]
+    
+    # Lift the ban if the Critic Agent successfully injected color/text styling
     if any(word in visual_text.lower() for word in trigger_words):
         ban_text = ""
 
@@ -97,6 +103,7 @@ def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: 
         f"- #Image1 is the base environment.\n"
     )
     
+    # --- ASSET VS TEXT-DRIVEN LOGIC ---
     if asset_urls:
         for idx, url in enumerate(asset_urls):
             asset_tag = f"#Image{idx + 2}" 
@@ -107,9 +114,8 @@ def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: 
             else:
                 design_prompt += f"- GLOBAL REFERENCE: {asset_tag} is a core brand asset. If any human or main subject appears in this scene, morph their physical likeness to match {asset_tag}.\n"
     else:
-        # --- TEXT-DRIVEN OVERRIDE ---
-        # Forces the image model to break the original base composition and follow the text
-        design_prompt += "- TEXT-DRIVEN OVERRIDE: Radically transform #Image1 to match the SCENE text above. If the SCENE describes a new subject or environment, you MUST aggressively replace the original subject based purely on the text description.\n"
+        # Forces the image model to break the original base composition and follow the text override
+        design_prompt += "- TEXT-DRIVEN OVERRIDE: Radically transform #Image1 to match the SCENE text above. If the SCENE describes a new subject, environment, or specific color, you MUST aggressively modify the original scene based purely on the text description.\n"
     
     args = {"prompt": design_prompt, "image_urls": image_urls, "aspect_ratio": aspect_ratio}
     
@@ -126,7 +132,7 @@ def generate_storyboard_frames(extracted_text: str, uploaded_assets: List[str], 
     """Pass 3 Orchestrator"""
     scenes = parse_extracted_scenes(extracted_text)
     if not scenes:
-        raise ValueError("Could not parse scenes. Check VLM output format.")
+        raise ValueError("Could not parse scenes. Check VLM Agent output format.")
         
     asset_urls = []
     if uploaded_assets:
