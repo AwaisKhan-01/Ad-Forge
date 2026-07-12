@@ -1,6 +1,6 @@
 """
 Implements an Agentic QA Architecture with Pydantic Strict Typing.
-Features a self-correcting Evaluator-Optimizer loop to prevent instruction dilution.
+Features Narrative Compression to retain full storyline essence.
 Located in: app/new_pipeline/analyzer.py
 """
 import json
@@ -31,7 +31,6 @@ class StoryboardOutput(BaseModel):
 # 2. ROBUST JSON EXTRACTOR
 # ==========================================
 def _extract_clean_json(raw_text: str) -> dict:
-    """Intelligently hunts and extracts JSON, ignoring LLM conversational hallucinations."""
     try:
         return json.loads(raw_text.strip())
     except json.JSONDecodeError:
@@ -57,18 +56,18 @@ def _extract_clean_json(raw_text: str) -> dict:
 # 3. AGENTIC FUNCTIONS
 # ==========================================
 def _generate_initial_draft(video_url: str, target_duration: int, exact_scenes: int, creative_directive: str, production_type: str) -> dict:
-    """The Director Agent: Attempts to write the perfect JSON storyboard."""
     
-    prompt = f"""Analyze the reference video and generate a new storyboard adapted for a {target_duration}-second {production_type} commercial.
+    prompt = f"""Analyze the ENTIRE reference video from start to finish and generate a new, highly condensed storyboard adapted for a {target_duration}-second {production_type} commercial.
 
 CRITICAL USER DIRECTIVE: "{creative_directive if creative_directive else 'Direct Adaptation'}"
 
 RULES:
-1. STRICT PACING LIMIT: A {target_duration}-second commercial can only physically hold {exact_scenes} scenes. You MUST output EXACTLY {exact_scenes} scenes in your JSON array. Do not describe the entire source video. Stop at scene {exact_scenes}.
-2. COLOR & STYLING: If the User Directive specifies colors, you MUST explicitly write those EXACT color words into the 'visual_prompt'.
-3. TIMESTAMPS: Extract true timestamps from the first {target_duration} seconds of the reference video.
-4. SINGLE SHOTS: 'visual_prompt' must describe only ONE camera shot per scene.
-5. ESCAPING: NEVER use unescaped double quotes inside your text values. Use single quotes if you need to quote something.
+1. NARRATIVE COMPRESSION (CRITICAL): You must compress the ENTIRE essence and storyline of the original video into exactly {exact_scenes} scenes. Do NOT just transcribe the first {target_duration} seconds. You must strategically select key moments from the BEGINNING (Hook), MIDDLE (Core Value), and END (Call to Action/Climax) of the source video.
+2. TIMESTAMPS: Output the true source timecodes of where these key moments actually occur in the original video (e.g., if the Call to Action happens at 01:05, your final scene timestamp should reflect that).
+3. SCENE COUNT: You MUST output EXACTLY {exact_scenes} scenes in your JSON array. Stop at scene {exact_scenes}.
+4. COLOR & STYLING: If the User Directive specifies colors or subjects, explicitly write those EXACT words into the 'visual_prompt'.
+5. SINGLE SHOTS: 'visual_prompt' must describe only ONE camera shot per scene.
+6. ESCAPING: NEVER use unescaped double quotes inside your text values. Use single quotes.
 
 OUTPUT FORMAT:
 You must output pure JSON that exactly matches this schema:
@@ -100,22 +99,21 @@ You must output pure JSON that exactly matches this schema:
     return _extract_clean_json(result.get("output", ""))
 
 def _critique_and_revise(draft_json: dict, creative_directive: str, target_duration: int, exact_scenes: int, video_url: str) -> dict:
-    """The Critic Agent: Evaluates the draft against the user's explicit instructions."""
     
-    critique_prompt = f"""You are an elite QA Agent. Review this draft JSON storyboard against the User's strict directive and pacing constraints.
+    critique_prompt = f"""You are an elite QA Agent. Review this draft JSON storyboard against the User's strict directive and narrative compression rules.
     
 USER DIRECTIVE: "{creative_directive if creative_directive else 'Direct Adaptation'}"
 TARGET SCENE COUNT: EXACTLY {exact_scenes} scenes.
 DRAFT JSON: {json.dumps(draft_json)}
 
 TASK: 
-1. Did the draft successfully incorporate the styling/colors requested in the User Directive? If not, rewrite the visual prompts to include them.
-2. Does the draft have EXACTLY {exact_scenes} scenes? If it has more than {exact_scenes} scenes, you MUST delete the extra scenes from the JSON array.
+1. Did the draft capture the FULL narrative arc (Beginning, Middle, and End) of the original video, or did it cut off early? If it missed the final Call-to-Action/Ending, you MUST rewrite the scenes to span the entire timeline of the original video.
+2. Does the draft have EXACTLY {exact_scenes} scenes? If it has more, delete the extra scenes.
+3. Did the draft successfully incorporate the styling/colors requested in the User Directive? If not, inject them.
 
 CRITICAL JSON RULES:
 1. Return ONLY valid JSON. No conversational text.
 2. ESCAPING: NEVER use unescaped double quotes inside your text values. Use single quotes.
-3. SCHEMA MATCH: Your output MUST perfectly match the provided schema structure.
 """
     result = fal_client.subscribe(
         NEMOTRON_MODEL, 
@@ -134,10 +132,9 @@ CRITICAL JSON RULES:
 # 4. THE EVALUATOR-OPTIMIZER LOOP
 # ==========================================
 def analyze_and_extract_scenes(video_url: str, target_duration: int, creative_directive: str = "", production_type: str = "Narrative") -> str:
-    # --- THE FIX: PYTHON-DRIVEN PACING CALCULATION ---
     # 15s // 4 = 3 scenes. 30s // 4 = 7 scenes.
     exact_scenes = max(3, target_duration // 4)
-    print(f"\n[AGENT: DIRECTOR] Drafting {exact_scenes}-scene structured storyboard for {target_duration}s target...")
+    print(f"\n[AGENT: DIRECTOR] Drafting {exact_scenes}-scene structured storyboard spanning the entire source video...")
     
     max_retries = 3
     attempt = 0
@@ -147,11 +144,9 @@ def analyze_and_extract_scenes(video_url: str, target_duration: int, creative_di
         try:
             draft_data = _generate_initial_draft(video_url, target_duration, exact_scenes, creative_directive, production_type)
             
-            # The Critic now runs on every pass to guarantee pacing length, even if there is no creative directive
-            print(f"[AGENT: CRITIC] Evaluating draft against User Directive and {exact_scenes}-scene constraint...")
+            print(f"[AGENT: CRITIC] Evaluating draft for Narrative Compression and User Directives...")
             draft_data = _critique_and_revise(draft_data, creative_directive, target_duration, exact_scenes, video_url) 
             
-            # Final Python-side enforcement: brutally slice the array if the LLM hallucinated extra scenes
             if len(draft_data.get("scenes", [])) > exact_scenes:
                 print(f"[SYSTEM] Trimming {len(draft_data['scenes']) - exact_scenes} hallucinated extra scenes...")
                 draft_data["scenes"] = draft_data["scenes"][:exact_scenes]
