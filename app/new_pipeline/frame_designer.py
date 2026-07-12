@@ -1,6 +1,6 @@
 """
 Parses structured text, extracts keyframes, and composites them in PARALLEL.
-Features Start-Anchored Semantic Time Extraction and Text-Driven Image Overrides.
+Features Start-Anchored Semantic Time Extraction and Structure-Preserving Image Overrides.
 Located in: app/new_pipeline/frame_designer.py
 """
 import os
@@ -43,12 +43,8 @@ def extract_frame(video_path: str, timestamp_sec: float) -> str:
     return out_path if os.path.exists(out_path) else None
 
 def parse_extracted_scenes(extracted_text: str) -> List[Dict[str, str]]:
-    """
-    Parses the strictly formatted Pydantic output from the Agentic Analyzer.
-    Because the agent guarantees the structure, this parser is fast and exact.
-    """
+    """Parses the strictly formatted Pydantic output from the Agentic Analyzer."""
     scenes = []
-    # Simplified and strict RegEx to match the exact Pydantic reconstruction
     pattern = re.compile(
         r"SCENE\s+(\d+)\s*"
         r"Timestamp:\s*(.*?)\s*"
@@ -93,7 +89,6 @@ def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: 
     ban_text = " CRITICAL: DO NOT GENERATE ANY TEXT, WORDS, OR TYPOGRAPHY."
     trigger_words = ["text", "word", "typography", "font", "color", "red", "pink", "blue", "yellow", "white", "black"]
     
-    # Lift the ban if the Critic Agent successfully injected color/text styling
     if any(word in visual_text.lower() for word in trigger_words):
         ban_text = ""
 
@@ -114,8 +109,9 @@ def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: 
             else:
                 design_prompt += f"- GLOBAL REFERENCE: {asset_tag} is a core brand asset. If any human or main subject appears in this scene, morph their physical likeness to match {asset_tag}.\n"
     else:
-        # Forces the image model to break the original base composition and follow the text override
-        design_prompt += "- TEXT-DRIVEN OVERRIDE: Radically transform #Image1 to match the SCENE text above. If the SCENE describes a new subject, environment, or specific color, you MUST aggressively modify the original scene based purely on the text description.\n"
+        # --- THE FIX: STRUCTURE-PRESERVING OVERRIDE ---
+        # We tell the model to lock the layout and ONLY change the content.
+        design_prompt += "- STYLE & CONTENT OVERRIDE: Maintain the exact underlying structure, spatial layout, and background composition of #Image1. ONLY change the specific text, colors, or subjects explicitly mentioned in the SCENE text above. Do not hallucinate a completely new environment.\n"
     
     args = {"prompt": design_prompt, "image_urls": image_urls, "aspect_ratio": aspect_ratio}
     
