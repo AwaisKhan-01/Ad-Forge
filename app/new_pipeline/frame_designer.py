@@ -1,6 +1,6 @@
 """
 Parses structured text, extracts Dead-Center Keyframes, and composites them in PARALLEL.
-Features the Diffusion Prompt Sterilizer to prevent image model hallucinations.
+Features the Diffusion Prompt Sterilizer with a Native Python NLP Fallback.
 Located in: app/new_pipeline/frame_designer.py
 """
 import os
@@ -11,19 +11,15 @@ import fal_client
 import concurrent.futures
 from typing import List, Dict
 from app.pipeline.uploader import upload_video
-from app.config import NEMOTRON_MODEL
 
 IMAGE_EDIT_MODEL = "fal-ai/nano-banana-2/edit"
+TEXT_LLM_MODEL = "fal-ai/llama-3.1-8b-instruct"
 FRAMES_DIR = "frames"
 
 # ==========================================
 # 1. DEAD-CENTER EXTRACTION MATH
 # ==========================================
 def parse_timestamp_to_center_seconds(ts_str: str) -> float:
-    """
-    Calculates the exact middle of a timestamp range to avoid transition blur
-    and guarantee we extract the most stable, accurate frame of the scene.
-    """
     try:
         parts = ts_str.replace(" ", "").split('-')
         def time_to_sec(t_str):
@@ -36,7 +32,6 @@ def parse_timestamp_to_center_seconds(ts_str: str) -> float:
         if len(parts) > 1:
             end_sec = time_to_sec(parts[1])
             duration = end_sec - start_sec
-            # Extract exactly in the middle of the scene
             return start_sec + (duration / 2.0)
         
         return start_sec + 0.5
@@ -45,7 +40,6 @@ def parse_timestamp_to_center_seconds(ts_str: str) -> float:
         return 0.0
 
 def extract_frame(video_path: str, timestamp_sec: float) -> str:
-    """Extracts a single frame from the video using FFmpeg."""
     os.makedirs(FRAMES_DIR, exist_ok=True)
     out_path = os.path.join(FRAMES_DIR, f"{uuid.uuid4()}.jpg")
     cmd = [
@@ -59,48 +53,62 @@ def extract_frame(video_path: str, timestamp_sec: float) -> str:
 # 2. THE DIFFUSION PROMPT STERILIZER
 # ==========================================
 def _compile_diffusion_prompt(visual_text: str, is_text_banned: bool) -> str:
-    """
-    Intercepts the Agent's narrative text and translates it into raw, 
-    comma-separated diffusion tags to prevent image model hallucination.
-    """
     ban_instruction = "CRITICAL: Omit any tags related to text, typography, or writing." if is_text_banned else "Include exact text strings in quotes if specified."
     
-    compiler_prompt = f"""You are a Stable Diffusion Prompt Engineer. Your job is to translate a narrative scene description into a highly optimized, comma-separated list of visual tags.
+    compiler_prompt = f"""You are a Stable Diffusion Prompt Engineer. Translate this scene into a highly optimized, comma-separated list of visual tags.
 
 SCENE DESCRIPTION: "{visual_text}"
 
 RULES:
-1. Strip out ALL conversational words, verbs, and meta-instructions (e.g., "Transform this", "Modify that", "The camera shows").
-2. Output ONLY visual keywords focusing on Subject, Environment, Lighting, and Aesthetic.
+1. Strip out ALL conversational words, verbs, and meta-instructions (e.g., "Transform this", "The camera shows", "appears").
+2. Output ONLY visual keywords.
 3. {ban_instruction}
-4. Ensure UI elements are described flatly (e.g., "flat UI design, minimalist interface").
+4. Ensure UI elements are described flatly.
 
-OUTPUT FORMAT:
-Return ONLY the comma-separated string. No introduction.
-Example: masterpiece, best quality, flat white UI background, minimalist interface, text 'Autonomous Work'
+OUTPUT FORMAT: Return ONLY the comma-separated string.
 """
     try:
+        # THE FIX: Using a lightning-fast Text LLM instead of the heavy Video VLM
         result = fal_client.subscribe(
-            NEMOTRON_MODEL, 
+            TEXT_LLM_MODEL, 
             arguments={
                 "prompt": compiler_prompt, 
                 "system_prompt": "You are a compiler. Output only comma-separated tags.", 
-                "max_tokens": 200, 
+                "max_tokens": 100, 
                 "temperature": 0.1
             }
         )
         compiled_tags = result.get("output", "").strip()
-        print(f"      [STERILIZED PROMPT] -> {compiled_tags}")
+        print(f"      [STERILIZED TAGS (LLM)] -> {compiled_tags}")
         return compiled_tags
+        
     except Exception as e:
-        print(f"Prompt Compiler failed: {e}. Falling back to raw text.")
-        return visual_text
+        print(f"      [SYSTEM WARNING] LLM Compiler failed ({e}). Engaging Native Python NLP fallback.")
+        # THE FIX: Bulletproof local text parsing if the API fails
+        quoted_texts = re.findall(r"'(.*?)'|\"(.*?)\"", visual_text)
+        quotes = [q[0] or q[1] for q in quoted_texts if q[0] or q[1]]
+        
+        clean = visual_text.lower()
+        bad = ["shows", "appears", "transform", "camera", "scene", "visual", "displaying", "split screen", "top", "bottom"]
+        for b in bad: clean = clean.replace(b, "")
+        
+        # Keep letters, numbers, and spaces
+        clean = re.sub(r'[^a-z0-9\s]', ' ', clean)
+        tags = [t.strip() for t in clean.split() if len(t.strip()) > 2]
+        
+        # Deduplicate and format
+        final_tags = ", ".join(list(dict.fromkeys(tags)))
+        
+        if not is_text_banned and quotes:
+            final_tags += ", " + ", ".join([f"text '{q}'" for q in quotes])
+            
+        print(f"      [STERILIZED TAGS (LOCAL)] -> {final_tags}")
+        return final_tags
 
 # ==========================================
 # 3. PARSING & ORCHESTRATION
 # ==========================================
 def parse_extracted_scenes(extracted_text: str) -> List[Dict[str, str]]:
-    """Parses the strictly formatted Pydantic output."""
     scenes = []
     pattern = re.compile(
         r"SCENE\s+(\d+)\s*"
@@ -123,7 +131,6 @@ def parse_extracted_scenes(extracted_text: str) -> List[Dict[str, str]]:
     return scenes
 
 def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: str, aspect_ratio: str) -> Dict:
-    # 1. Dead-Center Extraction to guarantee sharp, non-transition frames
     target_time = parse_timestamp_to_center_seconds(scene['timestamp'])
     print(f"\n[EXTRACTING] Scene {scene.get('scene_number')} -> Centered Timecode: {target_time:.2f}s")
     
@@ -138,18 +145,15 @@ def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: 
     
     raw_visual_text = scene['visual_prompt']
     
-    # 2. Assess Typography Ban status based on raw agent text
     trigger_words = ["text", "word", "typography", "font", "color", "red", "pink", "blue", "yellow", "white", "black", "interface", "notification"]
     is_text_banned = not any(word in raw_visual_text.lower() for word in trigger_words)
     
     if not asset_urls:
         raw_visual_text = re.sub(r'#Image\d+', '', raw_visual_text, flags=re.IGNORECASE).strip()
 
-    # 3. Sterilize the prompt into Diffusion Tags
     sterilized_tags = _compile_diffusion_prompt(raw_visual_text, is_text_banned)
     
-    # 4. Construct the clean image request without aggressive "Bulldozer" overrides
-    design_prompt = f"{sterilized_tags}, perfect layout matching #Image1"
+    design_prompt = f"{sterilized_tags}, perfect layout matching #Image1, highly detailed"
     
     if asset_urls:
         for idx, url in enumerate(asset_urls):
@@ -169,7 +173,6 @@ def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: 
         print(f"Error on Scene {scene['scene_number']}: {e}")
         scene["generated_image_url"] = None 
         
-    # We pass the sterilized tags BACK into the dictionary so the Video model gets them too!
     scene["visual_prompt_sterilized"] = sterilized_tags
     return scene
 
