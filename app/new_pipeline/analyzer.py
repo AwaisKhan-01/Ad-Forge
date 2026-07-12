@@ -1,115 +1,155 @@
 """
-Implements the 3-Pass Agency Architecture.
-Features Semantic Timecoding and Smart Text/Asset Replacement Routing.
+Implements an Agentic QA Architecture with Pydantic Strict Typing.
+Features a self-correcting Evaluator-Optimizer loop to prevent instruction dilution.
 Located in: app/new_pipeline/analyzer.py
 """
-import re
+import json
 import fal_client
+from pydantic import BaseModel, Field, ValidationError
+from typing import List, Optional
 from app.config import NEMOTRON_MODEL
 
-SYSTEM_PROMPT = "You are a senior video advertising director and VFX supervisor. Follow instructions strictly."
+SYSTEM_PROMPT = "You are a senior video advertising director. You communicate ONLY in valid, strictly formatted JSON."
 
-def _run_pass_1_macro_strategy(video_url: str, target_duration: int) -> str:
-    print(f"\n[AGENCY PASS 1] Analyzing reference ad structural psychology for a {target_duration}s target...")
-    example_count = max(3, target_duration // 4) 
-    
-    prompt = f"""Watch this reference video. Extract the core marketing architecture. Do NOT list specific product assets.
-    
-CRITICAL TASK: Analyze the pacing (cut rate) of this video. Based on its rhythm, calculate the optimal number of distinct camera shots/scenes required for a {target_duration}-second commercial. 
+# ==========================================
+# 1. PYDANTIC SCHEMAS (THE BOUNCERS)
+# ==========================================
+class Scene(BaseModel):
+    scene_number: int = Field(..., description="The sequential number of the scene.")
+    timestamp: str = Field(..., description="The exact source timecode, e.g., '00:00 - 00:03'")
+    visual_prompt: str = Field(..., description="Strictly ONE static visual description. Must include color styling if requested.")
+    motion: str = Field(..., description="Camera movement description.")
+    audio: str = Field(..., description="Audio cues, dialogue, or SFX for this scene.")
 
-Output strictly in this format:
-RECOMMENDED SCENE COUNT: (Integer only. e.g., {example_count})
-CORE HOOK: (Psychological hook in the first 3 seconds)
-VALUE PROPOSITION: (Core problem and solution)
-BRAND VIBE: (Aesthetic description, lighting, pacing)
-CALL TO ACTION: (Final message style)
+class StoryboardOutput(BaseModel):
+    macro_strategy: str = Field(..., description="The high-level marketing strategy and pacing calculation.")
+    master_audio: str = Field(..., description="The global audio track or music style.")
+    scenes: List[Scene] = Field(..., description="The list of perfectly calculated scenes.")
+
+# ==========================================
+# 2. AGENTIC FUNCTIONS
+# ==========================================
+def _generate_initial_draft(video_url: str, target_duration: int, creative_directive: str, production_type: str) -> dict:
+    """The Director Agent: Attempts to write the perfect JSON storyboard."""
+    
+    prompt = f"""Analyze the reference video and generate a new storyboard adapted for a {target_duration}-second {production_type} commercial.
+
+CRITICAL USER DIRECTIVE: "{creative_directive if creative_directive else 'Direct Adaptation'}"
+
+RULES:
+1. COLOR & STYLING: If the User Directive specifies colors (e.g., "Pinkish Red"), you MUST explicitly write those EXACT color words into the 'visual_prompt' of any scene containing text or modified subjects.
+2. TIMESTAMPS: Extract true timestamps from the reference video.
+3. SINGLE SHOTS: 'visual_prompt' must describe only ONE camera shot per scene.
+
+OUTPUT FORMAT:
+You must output pure JSON that exactly matches this schema:
+{{
+  "macro_strategy": "string",
+  "master_audio": "string",
+  "scenes": [
+    {{
+      "scene_number": 1,
+      "timestamp": "00:00 - 00:03",
+      "visual_prompt": "string",
+      "motion": "string",
+      "audio": "string"
+    }}
+  ]
+}}
 """
-    result = fal_client.subscribe(NEMOTRON_MODEL, arguments={"prompt": prompt, "system_prompt": SYSTEM_PROMPT, "video_url": video_url, "max_tokens": 1024, "temperature": 0.1, "reasoning_mode": "no_think"})
-    return result.get("output", "").strip()
+    result = fal_client.subscribe(
+        NEMOTRON_MODEL, 
+        arguments={
+            "prompt": prompt, 
+            "system_prompt": SYSTEM_PROMPT, 
+            "video_url": video_url, 
+            "max_tokens": 4096, 
+            "temperature": 0.2
+        }
+    )
+    
+    # Strip markdown formatting if the LLM wraps it in ```json ... ```
+    raw_output = result.get("output", "").strip()
+    if raw_output.startswith("```json"):
+        raw_output = raw_output[7:-3].strip()
+    elif raw_output.startswith("```"):
+        raw_output = raw_output[3:-3].strip()
+        
+    return json.loads(raw_output)
 
+def _critique_and_revise(draft_json: dict, creative_directive: str, target_duration: int) -> dict:
+    """The Critic Agent: Evaluates the draft against the user's explicit instructions."""
+    
+    # If there is no specific creative directive, we can skip the heavy critique
+    if not creative_directive:
+        return draft_json
+        
+    critique_prompt = f"""You are an elite QA Agent. Review this draft JSON storyboard against the User's strict directive.
+    
+USER DIRECTIVE: "{creative_directive}"
+DRAFT JSON: {json.dumps(draft_json)}
 
-def _run_pass_2_copywriter(video_url: str, macro_strategy: str, target_duration: int, creative_directive: str, production_type: str) -> str:
-    print(f"\n[AGENCY PASS 2] Writing adaptive script for: {production_type}...")
-    max_words = int(target_duration * 2.5)
-    directive_text = f"USER CREATIVE DIRECTIVE: {creative_directive if creative_directive else 'Direct Adaptation.'}"
+TASK: Did the draft successfully incorporate the styling, colors, or subject changes requested in the User Directive into the 'visual_prompt' fields?
+If it failed, rewrite the JSON to forcefully inject the user's specific words (e.g., color names, replacement subjects) into the relevant scenes.
 
-    if "No Voiceover" in production_type:
-        audio_rule = "1. NO SPOKEN VOICEOVER. Write short, punchy ON-SCREEN TEXT CARDS."
-        format_instructions = "On-Screen Text: (Sequential text cards)\nMusic Track: (Style)\nTimeline: Split pacing evenly."
-    elif "Motion Graphic" in production_type:
-        audio_rule = "1. NO VOICEOVER. Focus purely on kinetic motion transitions and SFX."
-        format_instructions = "Music & SFX Profile: (Sound design layout)\nTimeline: Split pacing across blocks."
-    elif "On-Screen Actor" in production_type:
-        audio_rule = f"1. ON-SCREEN DIALOGUE. Write an active spoken script (under {max_words} words)."
-        format_instructions = f"Dialogue: (Script under {max_words} words)\nMusic: (Track style)\nTimeline: Split pacing evenly."
-    else:
-        audio_rule = f"1. OFF-SCREEN VOICEOVER. Write a continuous voiceover script under {max_words} words."
-        format_instructions = f"Voiceover: (Script under {max_words} words)\nMusic: (Track style)\nTimeline: Split pacing evenly."
-
-    prompt = f"""You are an expert ad copywriter. Take this macro strategy and condense it into a {target_duration}-second timeline.
-MACRO STRATEGY:
-{macro_strategy}
-{directive_text}
-CRITICAL FORMAT RULES:
-{audio_rule}
-
-Output strictly in this format:
-{format_instructions}
+Return ONLY the perfectly corrected JSON matching the original schema. No explanations.
 """
-    result = fal_client.subscribe(NEMOTRON_MODEL, arguments={"prompt": prompt, "system_prompt": SYSTEM_PROMPT, "video_url": video_url, "max_tokens": 1536, "temperature": 0.2, "reasoning_mode": "no_think"})
-    return result.get("output", "").strip()
-
-
-def _run_pass_3_video_spotter(video_url: str, optimized_timeline: str, exact_scenes: int, creative_directive: str, production_type: str) -> str:
-    print(f"\n[AGENCY PASS 3] Mapping user assets to exactly {exact_scenes} intelligently calculated scenes...")
+    result = fal_client.subscribe(
+        NEMOTRON_MODEL, 
+        arguments={
+            "prompt": critique_prompt, 
+            "system_prompt": SYSTEM_PROMPT, 
+            "max_tokens": 4096, 
+            "temperature": 0.1
+        }
+    )
     
-    audio_split = optimized_timeline.split('Timeline:')
-    master_audio = audio_split[0].strip() if len(audio_split) > 0 else optimized_timeline
+    raw_output = result.get("output", "").strip()
+    if raw_output.startswith("```json"):
+        raw_output = raw_output[7:-3].strip()
+    elif raw_output.startswith("```"):
+        raw_output = raw_output[3:-3].strip()
+        
+    return json.loads(raw_output)
+
+# ==========================================
+# 3. THE EVALUATOR-OPTIMIZER LOOP
+# ==========================================
+def analyze_and_extract_scenes(video_url: str, target_duration: int, creative_directive: str = "", production_type: str = "Narrative") -> str:
+    print("\n[AGENT: DIRECTOR] Drafting initial structured storyboard...")
+    max_retries = 2
+    attempt = 0
+    final_storyboard = None
     
-    if "Motion Graphic" in production_type:
-        audio_label = "SFX:"
-    elif "On-Screen Actor" in production_type:
-        audio_label = "Dialogue Focus:"
-    else:
-        audio_label = "Audio:"
+    while attempt < max_retries:
+        try:
+            # Step 1: Director writes the draft
+            draft_data = _generate_initial_draft(video_url, target_duration, creative_directive, production_type)
+            
+            # Step 2: Critic reviews and rewrites if necessary
+            if creative_directive:
+                print("[AGENT: CRITIC] Evaluating draft against User Directive...")
+                draft_data = _critique_and_revise(draft_data, creative_directive, target_duration)
+            
+            # Step 3: Pydantic Validation (The Bouncer)
+            final_storyboard = StoryboardOutput(**draft_data)
+            print("[SYSTEM] JSON Schema Validation Passed. Storyboard locked.")
+            break
+            
+        except (json.JSONDecodeError, ValidationError) as e:
+            print(f"[SYSTEM WARNING] Agent output failed schema validation (Attempt {attempt + 1}/{max_retries}). Retrying...")
+            attempt += 1
+            if attempt == max_retries:
+                raise RuntimeError(f"Agentic loop failed to produce valid JSON after {max_retries} attempts. Error: {e}")
 
-    prompt = f"""Watch the reference video again. Generate a detailed storyboard matching this timeline.
-You MUST output EXACTLY {exact_scenes} scene blocks.
-
-CRITICAL CREATIVE & ASSET REPLACEMENT PROTOCOL:
-User Directive: "{creative_directive if creative_directive else 'No custom assets'}"
-1. TEXT-BASED OVERRIDE: If the user's directive asks to change a subject, environment, OR visual styling (like text colors, typography, or overlays), you MUST vividly describe these NEW elements physically inside the 'Visual:' section. Do not just put them in the audio block.
-2. ASSET TAGGING: ONLY if the user implies they uploaded custom images to replace subjects, append the string "#Image2" directly next to the subject in your description.
-
-CRITICAL ALIGNMENT RULES FOR DIFFUSION:
-1. SINGLE STATIC SHOT: The 'Visual' description MUST describe only ONE camera shot. NEVER describe multiple actions or cuts within a single scene. 
-2. TRUE TIMESTAMPS: Look at the ORIGINAL source video. Find the EXACT timecode where this single static shot begins.
-
-OUTPUT EXACTLY IN THIS FORMAT:
-
-[MASTER AUDIO]
-{master_audio}
-
-SCENE 1
-Timestamp: (Actual source video timecode, e.g., 00:12 - 00:15)
-Visual: (Strictly ONE static visual description)
-Motion: (Camera movement description)
-{audio_label} (Audio cues for this scene)
-
-SCENE 2
-(Continue pattern up to EXACTLY scene {exact_scenes})
-"""
-    result = fal_client.subscribe(NEMOTRON_MODEL, arguments={"prompt": prompt, "system_prompt": SYSTEM_PROMPT, "video_url": video_url, "max_tokens": 4096, "temperature": 0.1, "reasoning_mode": "no_think"})
-    return result.get("output", "").strip()
-
-
-def analyze_and_extract_scenes(video_url: str, target_duration: int, creative_directive: str = "", production_type: str = "Narrative Ad (Voiceover focused)") -> str:
-    macro_strategy = _run_pass_1_macro_strategy(video_url, target_duration)
-    scene_match = re.search(r"RECOMMENDED SCENE COUNT:\s*(\d+)", macro_strategy, re.IGNORECASE)
-    exact_scenes = int(scene_match.group(1)) if scene_match else max(2, target_duration // 5)
-    print(f"[*] Computed Pacing: {exact_scenes} distinct scenes required.")
+    # Step 4: Format the validated Python object back into the readable string UI format
+    output_str = f"=== STRATEGY ===\n{final_storyboard.macro_strategy}\n\n=== STORYBOARD ===\n[MASTER AUDIO]\n{final_storyboard.master_audio}\n\n"
     
-    optimized_timeline = _run_pass_2_copywriter(video_url, macro_strategy, target_duration, creative_directive, production_type)
-    final_storyboard = _run_pass_3_video_spotter(video_url, optimized_timeline, exact_scenes, creative_directive, production_type)
-    
-    return f"=== STRATEGY ===\n{macro_strategy}\n\n=== STORYBOARD ===\n{final_storyboard}".replace("\\n", "\n").replace(r"\n", "\n")
+    for scene in final_storyboard.scenes:
+        output_str += f"SCENE {scene.scene_number}\n"
+        output_str += f"Timestamp: {scene.timestamp}\n"
+        output_str += f"Visual: {scene.visual_prompt}\n"
+        output_str += f"Motion: {scene.motion}\n"
+        output_str += f"Audio: {scene.audio}\n\n"
+
+    return output_str.strip()
