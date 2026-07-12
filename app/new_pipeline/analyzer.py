@@ -1,6 +1,6 @@
 """
 Implements an Agentic QA Architecture with Pydantic Strict Typing.
-Features FFmpeg Pacing, Whisper ASR, and OpenRouter Gemini 3.1 Video Ingestion.
+Features FFmpeg Pacing and Pure OpenRouter Gemini 3.1 Video/Audio Ingestion.
 Located in: app/new_pipeline/analyzer.py
 """
 import json
@@ -82,37 +82,18 @@ def _calculate_dynamic_pacing(video_url: str, target_duration: int) -> int:
     return final_scenes
 
 # ==========================================
-# 4. WHISPER ASR TRANSCRIPTION
+# 4. AGENTIC FUNCTIONS (PURE NATIVE INGESTION)
 # ==========================================
-def _extract_perfect_transcript(video_url: str) -> str:
-    print("\n[SYSTEM] Extracting audio transcript via Whisper ASR...")
-    try:
-        result = fal_client.subscribe(
-            "fal-ai/whisper",
-            arguments={"audio_url": video_url}
-        )
-        transcript = result.get("text", "").strip()
-        print(f"[*] Whisper Transcript Acquired: '{transcript[:100]}...'")
-        return transcript
-    except Exception as e:
-        print(f"[SYSTEM WARNING] Whisper transcription failed: {e}.")
-        return ""
-
-# ==========================================
-# 5. AGENTIC FUNCTIONS (OPENROUTER SCHEMA ALIGNED)
-# ==========================================
-def _generate_initial_draft(video_url: str, target_duration: int, exact_scenes: int, creative_directive: str, production_type: str, true_transcript: str) -> dict:
+def _generate_initial_draft(video_url: str, target_duration: int, exact_scenes: int, creative_directive: str, production_type: str) -> dict:
     max_words = int(target_duration * 2.5)
     
-    audio_rule = f"""2. AUDIO CONTINUITY (CRITICAL): The speaker's exact words are: "{true_transcript}". DO NOT guess the audio based on on-screen text. You must edit and condense THAT EXACT transcript down to a {max_words}-word continuous script. Distribute this seamless script logically across your {exact_scenes} scenes.""" if true_transcript else f"""2. AUDIO CONTINUITY: Write a cohesive, continuous script (maximum {max_words} words total). Distribute across scenes seamlessly."""
-
-    prompt = f"""Analyze the ENTIRE reference video and generate a highly condensed storyboard for a {target_duration}-second {production_type} commercial.
+    prompt = f"""Analyze the ENTIRE reference video (both visual sequence and native audio/speech track) and generate a highly condensed storyboard for a {target_duration}-second {production_type} commercial.
 
 CRITICAL USER DIRECTIVE: "{creative_directive if creative_directive else 'Direct Adaptation'}"
 
 RULES:
 1. NARRATIVE COMPRESSION: Compress the ENTIRE storyline into exactly {exact_scenes} scenes. Select moments from BEGINNING, MIDDLE, and END.
-{audio_rule}
+2. NATIVE AUDIO CONTINUITY (CRITICAL): Listen to the speech, spoken dialogue, and voiceover natively present in the video file. Do NOT guess words based on text flashing on screen. Edit and condense the actual spoken dialogue into a seamless, continuous script (maximum {max_words} words total). Distribute this script logically across your {exact_scenes} scenes.
 3. TIMESTAMPS: Output true source timecodes of the visual moments.
 4. SCENE COUNT: EXACTLY {exact_scenes} scenes in the JSON array.
 5. COLOR & STYLING: Write exact requested styling into the 'visual_prompt'.
@@ -135,7 +116,6 @@ You must output pure JSON that exactly matches this schema:
   ]
 }}
 """
-    # Wired explicitly to the openrouter/router/video parameter requirements
     result = fal_client.subscribe(
         VLM_ENDPOINT, 
         arguments={
@@ -149,7 +129,7 @@ You must output pure JSON that exactly matches this schema:
     return _extract_clean_json(result.get("output", ""))
 
 def _critique_and_revise(draft_json: dict, creative_directive: str, exact_scenes: int, video_url: str) -> dict:
-    critique_prompt = f"""You are an elite QA Agent. Review this draft JSON storyboard.
+    critique_prompt = f"""You are an elite QA Agent. Review this draft JSON storyboard against the video asset.
     
 USER DIRECTIVE: "{creative_directive if creative_directive else 'Direct Adaptation'}"
 TARGET SCENE COUNT: EXACTLY {exact_scenes} scenes.
@@ -159,7 +139,7 @@ TASK:
 1. Capture FULL visual narrative arc?
 2. EXACTLY {exact_scenes} scenes? Delete extra.
 3. Incorporate styling/colors requested?
-4. AUDIO CONTINUITY: Do the 'audio' fields flow like a continuous, logical script without broken snippets?
+4. AUDIO CONTINUITY: Do the 'audio' fields flow like a continuous, logical script based on the actual spoken dialogue in the video without broken snippets?
 
 CRITICAL: ONLY valid JSON. NEVER use unescaped double quotes.
 """
@@ -176,11 +156,10 @@ CRITICAL: ONLY valid JSON. NEVER use unescaped double quotes.
     return _extract_clean_json(result.get("output", ""))
 
 # ==========================================
-# 6. ORCHESTRATION LOOP
+# 5. ORCHESTRATION LOOP
 # ==========================================
 def analyze_and_extract_scenes(video_url: str, target_duration: int, creative_directive: str = "", production_type: str = "Narrative") -> str:
     exact_scenes = _calculate_dynamic_pacing(video_url, target_duration)
-    true_transcript = _extract_perfect_transcript(video_url)
     
     print(f"\n[AGENT: DIRECTOR] Ingesting via OpenRouter {TARGET_VLM_MODEL}...")
     
@@ -190,7 +169,7 @@ def analyze_and_extract_scenes(video_url: str, target_duration: int, creative_di
     
     while attempt < max_retries:
         try:
-            draft_data = _generate_initial_draft(video_url, target_duration, exact_scenes, creative_directive, production_type, true_transcript)
+            draft_data = _generate_initial_draft(video_url, target_duration, exact_scenes, creative_directive, production_type)
             print(f"[AGENT: CRITIC] Evaluating draft structure...")
             draft_data = _critique_and_revise(draft_data, creative_directive, exact_scenes, video_url) 
             
