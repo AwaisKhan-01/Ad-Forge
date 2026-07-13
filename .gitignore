@@ -7,3 +7,9 @@ venv/
 *.log
 .DS_Store
 downloads/
+app/pipeline/
+segments/
+frames/frames/
+segments/
+frames/
+segments/

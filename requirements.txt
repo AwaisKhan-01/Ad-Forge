@@ -2,3 +2,5 @@ fal-client==1.0.0
 yt-dlp==2026.07.04
 gradio==6.19.0
 python-dotenv==1.2.2
+requests==2.32.3
+pydantic>=2.0.0
