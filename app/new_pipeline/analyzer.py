@@ -1,6 +1,6 @@
 """
 Implements an Agentic QA Architecture with Pydantic Strict Typing.
-Features FFmpeg Pacing and Pure OpenRouter Gemini 3.1 Video/Audio Ingestion.
+Features Dynamic Asset Allocation to prevent global asset leaking.
 Located in: app/new_pipeline/analyzer.py
 """
 import json
@@ -8,7 +8,6 @@ import re
 import subprocess
 from dotenv import load_dotenv
 
-# Run this immediately before fal_client imports to populate os.environ
 load_dotenv() 
 
 import fal_client
@@ -19,24 +18,19 @@ SYSTEM_PROMPT = "You are a senior video advertising director. You communicate ON
 VLM_ENDPOINT = "openrouter/router/video"
 TARGET_VLM_MODEL = "google/gemini-3.1-pro-preview"
 
-# ==========================================
-# 1. PYDANTIC SCHEMAS
-# ==========================================
 class Scene(BaseModel):
     scene_number: int = Field(..., description="The sequential number of the scene.")
     timestamp: str = Field(..., description="The exact source timecode, e.g., '00:00 - 00:03'")
-    visual_prompt: str = Field(..., description="Strictly ONE static visual description. Must include color styling if requested.")
+    visual_prompt: str = Field(..., description="ONE static visual description. Explicitly reference #Asset0, #Asset1 etc., if assigned.")
     motion: str = Field(..., description="Camera movement description.")
-    audio: str = Field(..., description="Audio cues, dialogue, or SFX for this scene.")
+    audio: str = Field(..., description="Audio cues or dialogue for this scene.")
+    assigned_assets: List[int] = Field(default=[], description="Indices of the user assets (e.g. [0] for Asset 0) that apply STRICTLY to this scene. Leave empty [] if none apply.")
 
 class StoryboardOutput(BaseModel):
     macro_strategy: str = Field(..., description="The high-level marketing strategy and pacing calculation.")
     master_audio: str = Field(..., description="The global audio track or music style.")
     scenes: List[Scene] = Field(..., description="The list of perfectly calculated scenes.")
 
-# ==========================================
-# 2. JSON EXTRACTOR
-# ==========================================
 def _extract_clean_json(raw_text: str) -> dict:
     try:
         return json.loads(raw_text.strip())
@@ -56,9 +50,6 @@ def _extract_clean_json(raw_text: str) -> dict:
             raise RuntimeError(f"Extracted string is invalid JSON: {e}")
     raise RuntimeError("Could not locate any valid JSON structure.")
 
-# ==========================================
-# 3. FFMPEG PACING ALGORITHM
-# ==========================================
 def _calculate_dynamic_pacing(video_url: str, target_duration: int) -> int:
     print("\n[SYSTEM] Scanning reference video to calculate Cut-Rate Density...")
     try:
@@ -86,27 +77,25 @@ def _calculate_dynamic_pacing(video_url: str, target_duration: int) -> int:
     print(f"[*] Pacing Engine Decision: {final_scenes} scenes required.")
     return final_scenes
 
-# ==========================================
-# 4. AGENTIC FUNCTIONS (PURE NATIVE INGESTION)
-# ==========================================
-def _generate_initial_draft(video_url: str, target_duration: int, exact_scenes: int, creative_directive: str, production_type: str) -> dict:
+def _generate_initial_draft(video_url: str, target_duration: int, exact_scenes: int, creative_directive: str, production_type: str, asset_instructions: str) -> dict:
     max_words = int(target_duration * 2.5)
     
-    prompt = f"""Analyze the ENTIRE reference video (both visual sequence and native audio/speech track) and generate a highly condensed storyboard for a {target_duration}-second {production_type} commercial.
+    prompt = f"""Analyze the ENTIRE reference video and generate a highly condensed storyboard for a {target_duration}-second {production_type} commercial.
 
 CRITICAL USER DIRECTIVE: "{creative_directive if creative_directive else 'Direct Adaptation'}"
 
+USER ASSET INSTRUCTIONS:
+{asset_instructions if asset_instructions else 'No custom production assets uploaded.'}
+
 RULES:
-1. NARRATIVE COMPRESSION: Compress the ENTIRE storyline into exactly {exact_scenes} scenes. Select moments from BEGINNING, MIDDLE, and END.
-2. NATIVE AUDIO CONTINUITY (CRITICAL): Listen to the speech, spoken dialogue, and voiceover natively present in the video file. Do NOT guess words based on text flashing on screen. Edit and condense the actual spoken dialogue into a seamless, continuous script (maximum {max_words} words total). Distribute this script logically across your {exact_scenes} scenes.
-3. TIMESTAMPS: Output true source timecodes of the visual moments.
-4. SCENE COUNT: EXACTLY {exact_scenes} scenes in the JSON array.
-5. COLOR & STYLING: Write exact requested styling into the 'visual_prompt'.
-6. SINGLE SHOTS: 'visual_prompt' is ONE camera shot per scene.
-7. ESCAPING: NEVER use unescaped double quotes inside values. Use single quotes.
+1. NARRATIVE COMPRESSION: Compress the storyline into exactly {exact_scenes} scenes. Select moments from BEGINNING, MIDDLE, and END.
+2. NATIVE AUDIO CONTINUITY: Listen to the speech, spoken dialogue, and voiceover natively present in the video file. Edit and condense the actual spoken dialogue into a seamless, continuous script (maximum {max_words} words total). Distribute this script logically across your {exact_scenes} scenes.
+3. SMART ASSET ALLOCATION: Read the 'USER ASSET INSTRUCTIONS'. Determine exactly which scenes require the user-uploaded assets. For each scene, populate the 'assigned_assets' array with the matching asset index (e.g., [0] for Asset 0). If an asset is a logo meant only for the closing sequence, do NOT assign it to early scenes. Keep 'assigned_assets' as [] for scenes that don't use them.
+4. VISUAL REFERENCE: If a scene uses an asset, incorporate the string '#Asset0', '#Asset1' directly into the 'visual_prompt' text to describe how it integrates.
+5. ESCAPING: NEVER use unescaped double quotes inside values. Use single quotes.
 
 OUTPUT FORMAT:
-You must output pure JSON that exactly matches this schema:
+You must output pure JSON matching this schema:
 {{
   "macro_strategy": "string",
   "master_audio": "string",
@@ -116,7 +105,8 @@ You must output pure JSON that exactly matches this schema:
       "timestamp": "00:00 - 00:03",
       "visual_prompt": "string",
       "motion": "string",
-      "audio": "string"
+      "audio": "string",
+      "assigned_assets": []
     }}
   ]
 }}
@@ -128,8 +118,7 @@ You must output pure JSON that exactly matches this schema:
             "prompt": prompt, 
             "system_prompt": SYSTEM_PROMPT, 
             "model": TARGET_VLM_MODEL,
-            "temperature": 0.2,
-            "reasoning": True
+            "temperature": 0.2
         }
     )
     return _extract_clean_json(result.get("output", ""))
@@ -143,9 +132,8 @@ DRAFT JSON: {json.dumps(draft_json)}
 
 TASK: 
 1. Capture FULL visual narrative arc?
-2. EXACTLY {exact_scenes} scenes? Delete extra.
-3. Incorporate styling/colors requested?
-4. AUDIO CONTINUITY: Do the 'audio' fields flow like a continuous, logical script based on the actual spoken dialogue in the video without broken snippets?
+2. EXACTLY {exact_scenes} scenes?
+3. ASSET ISOLATION: Verify that user assets (like logos) are ONLY assigned to the specific scenes requested by the user, and NOT leaked into unrelated scenes.
 
 CRITICAL: ONLY valid JSON. NEVER use unescaped double quotes.
 """
@@ -156,16 +144,12 @@ CRITICAL: ONLY valid JSON. NEVER use unescaped double quotes.
             "prompt": critique_prompt, 
             "system_prompt": SYSTEM_PROMPT, 
             "model": TARGET_VLM_MODEL,
-            "temperature": 0.1,
-            "reasoning": True
+            "temperature": 0.1
         }
     )
     return _extract_clean_json(result.get("output", ""))
 
-# ==========================================
-# 5. ORCHESTRATION LOOP
-# ==========================================
-def analyze_and_extract_scenes(video_url: str, target_duration: int, creative_directive: str = "", production_type: str = "Narrative") -> str:
+def analyze_and_extract_scenes(video_url: str, target_duration: int, creative_directive: str = "", production_type: str = "Narrative", asset_instructions: str = "") -> str:
     exact_scenes = _calculate_dynamic_pacing(video_url, target_duration)
     
     print(f"\n[AGENT: DIRECTOR] Ingesting via OpenRouter {TARGET_VLM_MODEL}...")
@@ -176,12 +160,11 @@ def analyze_and_extract_scenes(video_url: str, target_duration: int, creative_di
     
     while attempt < max_retries:
         try:
-            draft_data = _generate_initial_draft(video_url, target_duration, exact_scenes, creative_directive, production_type)
-            print(f"[AGENT: CRITIC] Evaluating draft structure...")
+            draft_data = _generate_initial_draft(video_url, target_duration, exact_scenes, creative_directive, production_type, asset_instructions)
+            print(f"[AGENT: CRITIC] Evaluating draft structure and asset isolation...")
             draft_data = _critique_and_revise(draft_data, creative_directive, exact_scenes, video_url) 
             
             if len(draft_data.get("scenes", [])) > exact_scenes:
-                print(f"[SYSTEM] Trimming {len(draft_data['scenes']) - exact_scenes} extra scenes...")
                 draft_data["scenes"] = draft_data["scenes"][:exact_scenes]
 
             final_storyboard = StoryboardOutput(**draft_data)
@@ -195,5 +178,5 @@ def analyze_and_extract_scenes(video_url: str, target_duration: int, creative_di
 
     output_str = f"=== STRATEGY ===\n{final_storyboard.macro_strategy}\n\n=== STORYBOARD ===\n[MASTER AUDIO]\n{final_storyboard.master_audio}\n\n"
     for scene in final_storyboard.scenes:
-        output_str += f"SCENE {scene.scene_number}\nTimestamp: {scene.timestamp}\nVisual: {scene.visual_prompt}\nMotion: {scene.motion}\nAudio: {scene.audio}\n\n"
+        output_str += f"SCENE {scene.scene_number}\nTimestamp: {scene.timestamp}\nVisual: {scene.visual_prompt}\nMotion: {scene.motion}\nAudio: {scene.audio}\nAssigned Assets: {json.dumps(scene.assigned_assets)}\n\n"
     return output_str.strip()
