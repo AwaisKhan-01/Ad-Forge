@@ -1,6 +1,6 @@
 """
 Implements an Agentic QA Architecture with Pydantic Strict Typing.
-Features Dynamic Asset Allocation to prevent global asset leaking.
+Features Dynamic Asset Allocation to prevent global asset leaking and enforce static temporal constraints.
 Located in: app/new_pipeline/analyzer.py
 """
 import json
@@ -21,7 +21,9 @@ TARGET_VLM_MODEL = "google/gemini-3.1-pro-preview"
 class Scene(BaseModel):
     scene_number: int = Field(..., description="The sequential number of the scene.")
     timestamp: str = Field(..., description="The exact source timecode, e.g., '00:00 - 00:03'")
-    visual_prompt: str = Field(..., description="ONE static visual description. Explicitly reference #Asset0, #Asset1 etc., if assigned.")
+    # SURGICAL FIX 1: Explicit Keyframe Targeting
+    keyframe_time: str = Field(..., description="The EXACT single second (e.g., '00:02') where the visual_prompt is most perfectly visible.")
+    visual_prompt: str = Field(..., description="ONE strictly static, frozen visual description. NO transitions or sequential actions.")
     motion: str = Field(..., description="Camera movement description.")
     audio: str = Field(..., description="Audio cues or dialogue for this scene.")
     assigned_assets: List[int] = Field(default=[], description="Indices of the user assets (e.g. [0] for Asset 0) that apply STRICTLY to this scene. Leave empty [] if none apply.")
@@ -32,23 +34,22 @@ class StoryboardOutput(BaseModel):
     scenes: List[Scene] = Field(..., description="The list of perfectly calculated scenes.")
 
 def _extract_clean_json(raw_text: str) -> dict:
+    # SURGICAL FIX 2: Robust Extraction to bypass Gemini "Reasoning" blocks
+    cleaned = raw_text.replace("```json", "").replace("```", "").strip()
     try:
-        return json.loads(raw_text.strip())
-    except json.JSONDecodeError:
-        pass
-    if raw_text.strip().startswith("```"):
-        cleaned = re.sub(r"^```(?:json)?|```$", "", raw_text.strip(), flags=re.IGNORECASE | re.MULTILINE).strip()
-        try:
-            return json.loads(cleaned)
-        except json.JSONDecodeError:
-            pass
-    match = re.search(r'\{.*\}', raw_text, re.DOTALL)
-    if match:
-        try:
+        start_idx = cleaned.find('{')
+        end_idx = cleaned.rfind('}') + 1
+        
+        if start_idx == -1 or end_idx == -1:
+            raise ValueError("No braces found")
+            
+        json_str = cleaned[start_idx:end_idx]
+        return json.loads(json_str)
+    except Exception as e:
+        match = re.search(r'\{.*\}', cleaned, re.DOTALL)
+        if match:
             return json.loads(match.group(0))
-        except json.JSONDecodeError as e:
-            raise RuntimeError(f"Extracted string is invalid JSON: {e}")
-    raise RuntimeError("Could not locate any valid JSON structure.")
+        raise RuntimeError(f"Could not locate valid JSON structure. Raw response: {cleaned[:100]}...")
 
 def _calculate_dynamic_pacing(video_url: str, target_duration: int) -> int:
     print("\n[SYSTEM] Scanning reference video to calculate Cut-Rate Density...")
@@ -89,10 +90,11 @@ USER ASSET INSTRUCTIONS:
 
 RULES:
 1. NARRATIVE COMPRESSION: Compress the storyline into exactly {exact_scenes} scenes. Select moments from BEGINNING, MIDDLE, and END.
-2. NATIVE AUDIO CONTINUITY: Listen to the speech, spoken dialogue, and voiceover natively present in the video file. Edit and condense the actual spoken dialogue into a seamless, continuous script (maximum {max_words} words total). Distribute this script logically across your {exact_scenes} scenes.
-3. SMART ASSET ALLOCATION: Read the 'USER ASSET INSTRUCTIONS'. Determine exactly which scenes require the user-uploaded assets. For each scene, populate the 'assigned_assets' array with the matching asset index (e.g., [0] for Asset 0). If an asset is a logo meant only for the closing sequence, do NOT assign it to early scenes. Keep 'assigned_assets' as [] for scenes that don't use them.
-4. VISUAL REFERENCE: If a scene uses an asset, incorporate the string '#Asset0', '#Asset1' directly into the 'visual_prompt' text to describe how it integrates.
+2. NATIVE AUDIO CONTINUITY: Listen to the speech, spoken dialogue, and voiceover natively present in the video file. Edit and condense the actual spoken dialogue into a seamless, continuous script (maximum {max_words} words total).
+3. MANDATORY ASSET MAPPING (CRITICAL): Read the 'USER ASSET INSTRUCTIONS'. You MUST replace the original subjects or objects in the video with the requested assets. If the user says "Asset 0 is the main person", you MUST write "#Asset0" instead of "man" or "woman" in the 'visual_prompt', AND you MUST put the integer 0 in the 'assigned_assets' array (e.g., [0]) for EVERY scene that character appears in. Do NOT leave the array empty if the subject is present.
+4. FREEZE TIME (CRITICAL): The 'visual_prompt' MUST describe a STILL PHOTOGRAPH. NO TIMELINES. NO SEQUENCES. You are STRICTLY FORBIDDEN from using the word "then". Put all camera movement in the 'motion' field.
 5. ESCAPING: NEVER use unescaped double quotes inside values. Use single quotes.
+6. EXPLICIT KEYFRAME TARGETING: You must provide a 'keyframe_time' (e.g. '00:05'). This must be the EXACT second within the timestamp block that perfectly visually matches your static 'visual_prompt'.
 
 OUTPUT FORMAT:
 You must output pure JSON matching this schema:
@@ -103,6 +105,7 @@ You must output pure JSON matching this schema:
     {{
       "scene_number": 1,
       "timestamp": "00:00 - 00:03",
+      "keyframe_time": "00:02",
       "visual_prompt": "string",
       "motion": "string",
       "audio": "string",
@@ -118,22 +121,25 @@ You must output pure JSON matching this schema:
             "prompt": prompt, 
             "system_prompt": SYSTEM_PROMPT, 
             "model": TARGET_VLM_MODEL,
-            "temperature": 0.2
+            "temperature": 0.2,
+            "reasoning": True
         }
     )
     return _extract_clean_json(result.get("output", ""))
 
-def _critique_and_revise(draft_json: dict, creative_directive: str, exact_scenes: int, video_url: str) -> dict:
+def _critique_and_revise(draft_json: dict, creative_directive: str, exact_scenes: int, video_url: str, asset_instructions: str) -> dict:
     critique_prompt = f"""You are an elite QA Agent. Review this draft JSON storyboard against the video asset.
     
 USER DIRECTIVE: "{creative_directive if creative_directive else 'Direct Adaptation'}"
+USER ASSET INSTRUCTIONS: "{asset_instructions if asset_instructions else 'None'}"
 TARGET SCENE COUNT: EXACTLY {exact_scenes} scenes.
 DRAFT JSON: {json.dumps(draft_json)}
 
-TASK: 
-1. Capture FULL visual narrative arc?
-2. EXACTLY {exact_scenes} scenes?
-3. ASSET ISOLATION: Verify that user assets (like logos) are ONLY assigned to the specific scenes requested by the user, and NOT leaked into unrelated scenes.
+QA TASK (FIX ERRORS DIRECTLY IN THE JSON):
+1. EXACTLY {exact_scenes} scenes?
+2. ENFORCE ASSET MAPPING: Did the draft assign assets to the correct scenes based on the USER ASSET INSTRUCTIONS? If the draft left 'assigned_assets' empty `[]` but the subject is clearly in the scene, YOU MUST FIX IT by adding the integer to the array (e.g., `[0]`) and injecting `#Asset0` into the visual_prompt.
+3. ENFORCE TIME FREEZE: Read every 'visual_prompt'. If you see the word "then" or any sequential action (e.g., "walks in, then sits"), DELETE IT. Rewrite it to describe a single, frozen moment.
+4. KEYFRAME INTEGRITY: Ensure 'keyframe_time' is present and accurately reflects a static moment within the scene's 'timestamp'.
 
 CRITICAL: ONLY valid JSON. NEVER use unescaped double quotes.
 """
@@ -144,7 +150,8 @@ CRITICAL: ONLY valid JSON. NEVER use unescaped double quotes.
             "prompt": critique_prompt, 
             "system_prompt": SYSTEM_PROMPT, 
             "model": TARGET_VLM_MODEL,
-            "temperature": 0.1
+            "temperature": 0.1,
+            "reasoning": True
         }
     )
     return _extract_clean_json(result.get("output", ""))
@@ -162,7 +169,8 @@ def analyze_and_extract_scenes(video_url: str, target_duration: int, creative_di
         try:
             draft_data = _generate_initial_draft(video_url, target_duration, exact_scenes, creative_directive, production_type, asset_instructions)
             print(f"[AGENT: CRITIC] Evaluating draft structure and asset isolation...")
-            draft_data = _critique_and_revise(draft_data, creative_directive, exact_scenes, video_url) 
+            
+            draft_data = _critique_and_revise(draft_data, creative_directive, exact_scenes, video_url, asset_instructions) 
             
             if len(draft_data.get("scenes", [])) > exact_scenes:
                 draft_data["scenes"] = draft_data["scenes"][:exact_scenes]
@@ -178,5 +186,6 @@ def analyze_and_extract_scenes(video_url: str, target_duration: int, creative_di
 
     output_str = f"=== STRATEGY ===\n{final_storyboard.macro_strategy}\n\n=== STORYBOARD ===\n[MASTER AUDIO]\n{final_storyboard.master_audio}\n\n"
     for scene in final_storyboard.scenes:
-        output_str += f"SCENE {scene.scene_number}\nTimestamp: {scene.timestamp}\nVisual: {scene.visual_prompt}\nMotion: {scene.motion}\nAudio: {scene.audio}\nAssigned Assets: {json.dumps(scene.assigned_assets)}\n\n"
+        # SURGICAL FIX 3: Inject the Keyframe line into the output string so frame_designer.py can regex it
+        output_str += f"SCENE {scene.scene_number}\nTimestamp: {scene.timestamp}\nKeyframe: {scene.keyframe_time}\nVisual: {scene.visual_prompt}\nMotion: {scene.motion}\nAudio: {scene.audio}\nAssigned Assets: {json.dumps(scene.assigned_assets)}\n\n"
     return output_str.strip()
