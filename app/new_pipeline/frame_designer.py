@@ -21,6 +21,7 @@ FRAMES_DIR = "frames"
 # TYPOGRAPHY PRESET REGISTRY
 # ==========================================
 TYPOGRAPHY_PRESETS = {
+    "NO_TEXT": "no text, no typography, no letters, no logos, no branding, clean composition",
     "chunky_display": "bold chunky irregular hand-drawn display typeface, interlocking blocky letters, playful raw graphic design layout, thick solid weights",
     "elegant_script_mix": "high-contrast elegant spencerian script typography mixed with clean bold geometric sans-serif accent lettering, high-fashion luxury editorial text layout",
     "streetwear_graffiti": "grungy streetwear stenciled typography text graphic, distressed spray-paint texture, urban stencil art style, sharp aggressive letter angles, clean crisp monochrome edges",
@@ -48,7 +49,6 @@ def extract_frame(video_path: str, timestamp_sec: float) -> str:
         "ffmpeg", "-ss", str(timestamp_sec), "-i", video_path,
         "-frames:v", "1", "-q:v", "2", out_path, "-y"
     ]
-    # Defensive check: ensure FFmpeg output is captured
     try:
         subprocess.run(cmd, capture_output=True, text=True, check=True)
         return out_path if os.path.exists(out_path) else None
@@ -92,13 +92,16 @@ OUTPUT FORMAT: Return ONLY the clean prompt string. No quotes, no intro.
 
 def parse_extracted_scenes(extracted_text: str) -> List[Dict]:
     scenes = []
+    
+    # --- SURGICAL FIX: Updated Regex to capture the new separated fields ---
     pattern = re.compile(
         r"SCENE\s+(\d+)\s*"
         r"Timestamp:\s*(.*?)\s*"
         r"Keyframe:\s*(.*?)\s*"
         r"Visual:\s*(.*?)\s*"
         r"Motion:\s*(.*?)\s*"
-        r"Audio:\s*(.*?)\s*"
+        r"Spoken Dialogue:\s*(.*?)\s*"
+        r"SFX/Music:\s*(.*?)\s*"
         r"Assigned Assets:\s*(.*?)(?=\nSCENE|\Z)",
         re.DOTALL | re.IGNORECASE
     )
@@ -106,7 +109,7 @@ def parse_extracted_scenes(extracted_text: str) -> List[Dict]:
     matches = pattern.finditer(extracted_text)
     for match in matches:
         try:
-            assets_list = json.loads(match.group(7).strip())
+            assets_list = json.loads(match.group(8).strip())
         except Exception:
             assets_list = []
             
@@ -116,7 +119,8 @@ def parse_extracted_scenes(extracted_text: str) -> List[Dict]:
             "keyframe_time": match.group(3).strip(),
             "visual_prompt": match.group(4).strip(),
             "motion": match.group(5).strip(),
-            "audio": match.group(6).strip(),
+            "spoken_dialogue": match.group(6).strip(),
+            "sfx_music": match.group(7).strip(),
             "assigned_assets": assets_list
         })
     return scenes
@@ -135,15 +139,15 @@ def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: 
     
     assigned_indices = scene.get("assigned_assets", [])
     raw_visual_text = scene['visual_prompt']
-    scene_audio = scene.get("audio", "").strip()
     
-    # 1. Typography Logic
+    # --- SURGICAL FIX: Only evaluate spoken_dialogue for text triggers ---
+    scene_dialogue = scene.get("spoken_dialogue", "").strip()
+    
     trigger_words = ["text", "word", "typography", "font", "interface", "logo", "title card", "displaying"]
     has_explicit_text_request = any(word in raw_visual_text.lower() for word in trigger_words)
-    has_spoken_voiceover = bool(scene_audio and scene_audio not in ["", "..."] and "music" not in scene_audio.lower())
+    has_spoken_voiceover = bool(scene_dialogue and scene_dialogue not in ["", "..."])
     is_text_banned = not (has_explicit_text_request or has_spoken_voiceover)
 
-    # 2. Asset Mapping (Handling 0 vs 1 indexing)
     pre_mapped_text = raw_visual_text
     for local_idx, absolute_idx in enumerate(assigned_indices):
         if absolute_idx >= len(asset_urls) and absolute_idx > 0:
@@ -160,13 +164,13 @@ def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: 
         else:
             print(f"      [WARNING] VLM requested Asset {absolute_idx}, but it does not exist. Skipping.")
 
-    # 3. Compilation
     sterilized_phrase = _compile_diffusion_prompt(pre_mapped_text, is_text_banned)
     design_prompt = f"Using #image1 as the base layout: {sterilized_phrase}"
 
     if not is_text_banned:
         font_prompt_modifier = TYPOGRAPHY_PRESETS.get(selected_font_style, TYPOGRAPHY_PRESETS["chunky_display"])
-        text_content = scene_audio if has_spoken_voiceover else ""
+        # --- SURGICAL FIX: Inject only the spoken dialogue as typography ---
+        text_content = scene_dialogue if has_spoken_voiceover else ""
         if text_content:
             design_prompt += f', featuring integrated typography reading exactly "{text_content}" styled in {font_prompt_modifier}'
         else:
@@ -182,7 +186,6 @@ def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: 
         "negative_prompt": "ugly, deformed, blurry text, double letters, messy layout, generic sans-serif, standard subtitle boxes, hallucinated faces, overprocessed, deep-fried AI, cluttered, noisy"
     }
     
-    # 4. Final Execution
     try:
         print(f"      [SCENE {scene.get('scene_number')} PAYLOAD] Typography: {selected_font_style} | Prompt: {design_prompt}")
         result = fal_client.subscribe(IMAGE_EDIT_MODEL, arguments=args)
