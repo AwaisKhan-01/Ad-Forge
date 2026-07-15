@@ -27,7 +27,8 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./Dockerfile
+          #dcoker file is at docker/Dockerfile
+          file: docker/Dockerfile
           push: true
           # Replace 'yourusername' below with your actual Docker Hub username!
           # It tags the image as 'latest' automatically
