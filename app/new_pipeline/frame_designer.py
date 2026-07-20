@@ -40,7 +40,7 @@ IMAGE_MODELS = {
     },
     "gpt-image-2": {
         "label": "GPT Image 2 (Edit)",
-        "endpoint": "fal-ai/gpt-image-2/image-to-image",
+        "endpoint": "fal-ai/gpt-image-2/edit",
         "supports_size": True,
         "sizes": ["landscape_4_3", "square_hd", "portrait_4_3", "landscape_16_9"],
         "qualities": ["low", "medium", "high"],
