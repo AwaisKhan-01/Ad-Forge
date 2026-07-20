@@ -12,7 +12,7 @@ from app.new_pipeline.cost_tracker import CostTracker
 
 from app.new_pipeline.analyzer import analyze_and_extract_scenes
 from app.new_pipeline.frame_designer import generate_storyboard_frames, _process_single_scene, parse_extracted_scenes
-from app.new_pipeline.generator import generate_final_video
+from app.new_pipeline.generator import generate_final_video, regenerate_single_segment
 
 # --- SLEEK ENTERPRISE CSS ---
 CUSTOM_CSS = """
@@ -49,10 +49,14 @@ def step2_extract_scenes(api_key, local_video_path, creative_directive, target_d
     try:
         hosted_video_url = upload_video(local_video_path)
         extracted_text = analyze_and_extract_scenes(
-            video_url=hosted_video_url, 
+            video_url=hosted_video_url,
             target_duration=int(target_duration),
             creative_directive=creative_directive,
-            production_type=production_type
+            production_type=production_type,
+            # The creative directive IS the asset instruction set (it describes what
+            # each uploaded asset is and how to swap it in). Feed it to both prompts
+            # so the VLM actually populates assigned_assets instead of leaving [] .
+            asset_instructions=creative_directive
         )
         return extracted_text
     except Exception as e:
@@ -116,27 +120,52 @@ def step3_regenerate_single(api_key, edited_prompts, scene_num_to_regen, uploade
         print(f"Single scene regeneration crash: {e}")
         return gr.update(), current_storyboard_state
 
+def _format_cost(tracker):
+    cost = tracker.total()
+    return (f"Video gen: ${cost['video_generation_confirmed']}\n"
+            f"Images/LLM: ${cost['images_and_llm_estimated']}\n"
+            f"Total: ${cost['total_estimated']}")
+
 def step4_generate_final(api_key, storyboard_frames, final_instructions, model_choice, duration, aspect_ratio, resolution, raw_script_text, production_type):
     set_fal_key(api_key)
     if not storyboard_frames:
-        return None, "Error: No storyboard frames found. Please complete Step 3."
-    
+        return None, "Error: No storyboard frames found. Please complete Step 3.", None, gr.update()
+
     tracker = CostTracker()
-    tracker.add_analysis_call() 
+    tracker.add_analysis_call()
     tracker.add_image_generation_calls(len(storyboard_frames))
-    
+
     try:
-        final_video_url = generate_final_video(
-            storyboard_frames=storyboard_frames, final_instructions=final_instructions, 
-            model_id=model_choice, cost_tracker=tracker, total_duration=duration, 
+        result = generate_final_video(
+            storyboard_frames=storyboard_frames, final_instructions=final_instructions,
+            model_id=model_choice, cost_tracker=tracker, total_duration=duration,
             aspect_ratio=aspect_ratio, resolution=resolution, raw_script_text=raw_script_text,
             production_type=production_type
         )
-        cost = tracker.total()
-        cost_text = f"Video gen: ${cost['video_generation_confirmed']}\nImages/LLM: ${cost['images_and_llm_estimated']}\nTotal: ${cost['total_estimated']}"
-        return final_video_url, cost_text
+        # result is a dict: partial video + per-segment state + status report.
+        report = f"{result['status_report']}\n\n{_format_cost(tracker)}"
+        # Pre-select the first failed scene in the re-render box, if any.
+        failed = result.get("failed_scene_numbers") or []
+        seg_choice = gr.update(value=failed[0]) if failed else gr.update()
+        return result["final_video_path"], report, result["segments"], seg_choice
     except Exception as e:
-        return None, f"Generation Failed: {str(e)}"
+        return None, f"Generation Failed: {str(e)}", None, gr.update()
+
+def step4_rerender_segment(api_key, segments_state, scene_number, resolution, prompt_override, image_override):
+    """Re-render ONE failed/edited video segment without touching the others."""
+    set_fal_key(api_key)
+    if not segments_state:
+        return None, "No rendered segments found. Run 'Render Final Commercial' first.", segments_state
+    tracker = CostTracker()
+    try:
+        result = regenerate_single_segment(
+            segments=segments_state, scene_number=scene_number, cost_tracker=tracker,
+            resolution=resolution, prompt_override=prompt_override, image_url_override=image_override
+        )
+        report = f"{result['status_report']}\n\n{_format_cost(tracker)}"
+        return result["final_video_path"], report, result["segments"]
+    except Exception as e:
+        return None, f"Re-render Failed: {str(e)}", segments_state
 
 # --- UI LAYOUT ---
 with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
@@ -153,7 +182,8 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
             )
     
     state_storyboard_frames = gr.State()
-    
+    state_video_segments = gr.State()   # per-segment render state for chunk recovery
+
     with gr.Tabs():
         with gr.TabItem("1. Strategy & Assets"):
             with gr.Row():
@@ -218,8 +248,22 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
                     resolution_choice = gr.Dropdown(choices=["480p", "720p"], value="720p", label="Resolution")
                     final_instructions = gr.Textbox(label="Global Override Instructions", placeholder="e.g. Keep lighting cinematic, end with logo fade.", lines=3)
                     btn_generate_final = gr.Button("🎬 Render Final Commercial", variant="primary")
-                    cost_output = gr.Textbox(label="Compute Cost Estimate", lines=3, interactive=False)
-                    
+                    cost_output = gr.Textbox(label="Compute Cost & Render Status", lines=6, interactive=False)
+
+                    gr.Markdown("---")
+                    gr.Markdown("### 🩹 Segment Recovery")
+                    gr.Markdown(
+                        "If a scene failed, its reason appears above. Fix the cause "
+                        "below (edit the prompt and/or paste a new base image URL), "
+                        "then re-render just that segment — other scenes are kept."
+                    )
+                    rerender_scene_num = gr.Number(label="Scene # to re-render", precision=0, value=1)
+                    rerender_prompt = gr.Textbox(label="Corrected Prompt (optional)", lines=3,
+                                                 placeholder="Leave blank to reuse the original prompt.")
+                    rerender_image_url = gr.Textbox(label="Replacement Base Image URL (optional)",
+                                                    placeholder="Paste a new keyframe/asset URL if the image was the problem.")
+                    btn_rerender_segment = gr.Button("🔁 Re-Render This Segment", variant="secondary")
+
                 with gr.Column(scale=3):
                     final_video = gr.Video(label="Final AdForge Export", height=600)
 
@@ -249,9 +293,15 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
     )
     
     btn_generate_final.click(
-        fn=step4_generate_final, 
-        inputs=[api_key_input, state_storyboard_frames, final_instructions, model_choice, duration_choice, aspect_ratio_choice, resolution_choice, extracted_prompts, production_type], 
-        outputs=[final_video, cost_output]
+        fn=step4_generate_final,
+        inputs=[api_key_input, state_storyboard_frames, final_instructions, model_choice, duration_choice, aspect_ratio_choice, resolution_choice, extracted_prompts, production_type],
+        outputs=[final_video, cost_output, state_video_segments, rerender_scene_num]
+    )
+
+    btn_rerender_segment.click(
+        fn=step4_rerender_segment,
+        inputs=[api_key_input, state_video_segments, rerender_scene_num, resolution_choice, rerender_prompt, rerender_image_url],
+        outputs=[final_video, cost_output, state_video_segments]
     )
 
 if __name__ == "__main__":
