@@ -189,7 +189,7 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
                     aspect_ratio_choice = gr.Dropdown(choices=["16:9", "9:16", "1:1"], value="16:9", label="Aspect Ratio")
                     
                     font_choices = [
-                        {"No Text", "NO_TEXT"},
+                        ("No Text", "NO_TEXT"),
                         ("Chunky Display (Bold & Playful)", "chunky_display"),
                         ("Elegant Script Mix (High Fashion)", "elegant_script_mix"),
                         ("Streetwear Graffiti (Grungy Urban)", "streetwear_graffiti"),

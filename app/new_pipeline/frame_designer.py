@@ -92,27 +92,60 @@ OUTPUT FORMAT: Return ONLY the clean prompt string. No quotes, no intro.
 
 def parse_extracted_scenes(extracted_text: str) -> List[Dict]:
     scenes = []
-    
-    # --- SURGICAL FIX: Updated Regex to capture the new separated fields ---
+
+    # 1) Quick JSON fallback: if the VLM returned a JSON object/array, try to parse it.
+    try:
+        jmatch = re.search(r"\{\s*\"macro_strategy\".*\}\s*", extracted_text, re.DOTALL)
+        if not jmatch:
+            jmatch = re.search(r"\[\s*\{.*\}\s*\]", extracted_text, re.DOTALL)
+        if jmatch:
+            try:
+                parsed = json.loads(jmatch.group(0))
+                # If parsed is a dict with scenes key
+                if isinstance(parsed, dict) and "scenes" in parsed:
+                    for s in parsed["scenes"]:
+                        scenes.append({
+                            "scene_number": str(s.get("scene_number", "")),
+                            "timestamp": s.get("timestamp", ""),
+                            "keyframe_time": s.get("keyframe_time", ""),
+                            "visual_prompt": s.get("visual_prompt", ""),
+                            "motion": s.get("motion", ""),
+                            "spoken_dialogue": s.get("spoken_dialogue", ""),
+                            "sfx_music": s.get("sfx_music", ""),
+                            "assigned_assets": s.get("assigned_assets", [])
+                        })
+                    return scenes
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # 2) Flexible regex to capture various label variants and tolerate spacing/casing differences
     pattern = re.compile(
-        r"SCENE\s+(\d+)\s*"
-        r"Timestamp:\s*(.*?)\s*"
-        r"Keyframe:\s*(.*?)\s*"
-        r"Visual:\s*(.*?)\s*"
-        r"Motion:\s*(.*?)\s*"
-        r"Spoken Dialogue:\s*(.*?)\s*"
-        r"SFX/Music:\s*(.*?)\s*"
-        r"Assigned Assets:\s*(.*?)(?=\nSCENE|\Z)",
+        r"SCENE\s+(\d+)\s*"                             # Scene number
+        r"(?:Timestamp|Timecode)?:?\s*(.*?)\s*"         # Timestamp or Timecode
+        r"(?:Keyframe(?: Time)?|Keyframe)?:?\s*(.*?)\s*"# Keyframe or Keyframe Time
+        r"(?:Visual|Visual Prompt)?:?\s*(.*?)\s*"       # Visual prompt
+        r"(?:Motion)?:?\s*(.*?)\s*"                    # Motion
+        r"(?:Spoken Dialogue|Spoken)?:?\s*(.*?)\s*"    # Spoken dialogue
+        r"(?:SFX/Music|SFX|Music)?:?\s*(.*?)\s*"       # SFX/Music
+        r"(?:Assigned Assets|Assigned|Assets)?:?\s*(.*?)(?=\nSCENE|\Z)",
         re.DOTALL | re.IGNORECASE
     )
-    
-    matches = pattern.finditer(extracted_text)
+
+    matches = list(pattern.finditer(extracted_text))
     for match in matches:
+        raw_assets = match.group(8).strip()
+        assets_list = []
+        # Try JSON decode first, then fallback to extracting integers
         try:
-            assets_list = json.loads(match.group(8).strip())
+            assets_list = json.loads(raw_assets)
+            if not isinstance(assets_list, list):
+                assets_list = []
         except Exception:
-            assets_list = []
-            
+            nums = re.findall(r"\d+", raw_assets)
+            assets_list = [int(n) for n in nums] if nums else []
+
         scenes.append({
             "scene_number": match.group(1).strip(),
             "timestamp": match.group(2).strip(),
@@ -123,6 +156,7 @@ def parse_extracted_scenes(extracted_text: str) -> List[Dict]:
             "sfx_music": match.group(7).strip(),
             "assigned_assets": assets_list
         })
+
     return scenes
 
 def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: str, aspect_ratio: str, selected_font_style: str = "chunky_display") -> Dict:

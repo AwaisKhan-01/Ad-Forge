@@ -21,14 +21,11 @@ TARGET_VLM_MODEL = "google/gemini-3.1-pro-preview"
 class Scene(BaseModel):
     scene_number: int = Field(..., description="The sequential number of the scene.")
     timestamp: str = Field(..., description="The exact source timecode, e.g., '00:00 - 00:03'")
+    # SURGICAL FIX 1: Explicit Keyframe Targeting
     keyframe_time: str = Field(..., description="The EXACT single second (e.g., '00:02') where the visual_prompt is most perfectly visible.")
     visual_prompt: str = Field(..., description="ONE strictly static, frozen visual description. NO transitions or sequential actions.")
     motion: str = Field(..., description="Camera movement description.")
-    
-    # --- SURGICAL FIX: Separated Audio Schema ---
-    spoken_dialogue: str = Field(default="", description="ONLY the exact words meant to be spoken by a voiceover or actor. Leave completely blank if there is no speaking.")
-    sfx_music: str = Field(default="", description="Descriptions of background music, beat drops, and sound effects (e.g., 'Heavy bass drop', 'Upbeat synth').")
-    
+    audio: str = Field(..., description="Audio cues or dialogue for this scene.")
     assigned_assets: List[int] = Field(default=[], description="Indices of the user assets (e.g. [0] for Asset 0) that apply STRICTLY to this scene. Leave empty [] if none apply.")
 
 class StoryboardOutput(BaseModel):
@@ -37,6 +34,7 @@ class StoryboardOutput(BaseModel):
     scenes: List[Scene] = Field(..., description="The list of perfectly calculated scenes.")
 
 def _extract_clean_json(raw_text: str) -> dict:
+    # SURGICAL FIX 2: Robust Extraction to bypass Gemini "Reasoning" blocks
     cleaned = raw_text.replace("```json", "").replace("```", "").strip()
     try:
         start_idx = cleaned.find('{')
@@ -81,6 +79,8 @@ def _calculate_dynamic_pacing(video_url: str, target_duration: int) -> int:
     return final_scenes
 
 def _generate_initial_draft(video_url: str, target_duration: int, exact_scenes: int, creative_directive: str, production_type: str, asset_instructions: str) -> dict:
+    max_words = int(target_duration * 2.5)
+    
     prompt = f"""Analyze the ENTIRE reference video and generate a highly condensed storyboard for a {target_duration}-second {production_type} commercial.
 
 CRITICAL USER DIRECTIVE: "{creative_directive if creative_directive else 'Direct Adaptation'}"
@@ -90,7 +90,7 @@ USER ASSET INSTRUCTIONS:
 
 RULES:
 1. NARRATIVE COMPRESSION: Compress the storyline into exactly {exact_scenes} scenes. Select moments from BEGINNING, MIDDLE, and END.
-2. STRICT AUDIO GUARDRAILS: You must separate dialogue from background sounds. Put ANY spoken words (voiceover or acting) strictly inside the 'spoken_dialogue' field. Put ANY beat drops, sound effects, or music descriptions strictly inside the 'sfx_music' field. If no one is speaking, leave 'spoken_dialogue' completely empty.
+2. NATIVE AUDIO CONTINUITY: Listen to the speech, spoken dialogue, and voiceover natively present in the video file. Edit and condense the actual spoken dialogue into a seamless, continuous script (maximum {max_words} words total).
 3. MANDATORY ASSET MAPPING (CRITICAL): Read the 'USER ASSET INSTRUCTIONS'. You MUST replace the original subjects or objects in the video with the requested assets. If the user says "Asset 0 is the main person", you MUST write "#Asset0" instead of "man" or "woman" in the 'visual_prompt', AND you MUST put the integer 0 in the 'assigned_assets' array (e.g., [0]) for EVERY scene that character appears in. Do NOT leave the array empty if the subject is present.
 4. FREEZE TIME (CRITICAL): The 'visual_prompt' MUST describe a STILL PHOTOGRAPH. NO TIMELINES. NO SEQUENCES. You are STRICTLY FORBIDDEN from using the word "then". Put all camera movement in the 'motion' field.
 5. ESCAPING: NEVER use unescaped double quotes inside values. Use single quotes.
@@ -108,8 +108,7 @@ You must output pure JSON matching this schema:
       "keyframe_time": "00:02",
       "visual_prompt": "string",
       "motion": "string",
-      "spoken_dialogue": "string",
-      "sfx_music": "string",
+      "audio": "string",
       "assigned_assets": []
     }}
   ]
@@ -141,7 +140,6 @@ QA TASK (FIX ERRORS DIRECTLY IN THE JSON):
 2. ENFORCE ASSET MAPPING: Did the draft assign assets to the correct scenes based on the USER ASSET INSTRUCTIONS? If the draft left 'assigned_assets' empty `[]` but the subject is clearly in the scene, YOU MUST FIX IT by adding the integer to the array (e.g., `[0]`) and injecting `#Asset0` into the visual_prompt.
 3. ENFORCE TIME FREEZE: Read every 'visual_prompt'. If you see the word "then" or any sequential action (e.g., "walks in, then sits"), DELETE IT. Rewrite it to describe a single, frozen moment.
 4. KEYFRAME INTEGRITY: Ensure 'keyframe_time' is present and accurately reflects a static moment within the scene's 'timestamp'.
-5. HALLUCINATION CHECK: Ensure the 'spoken_dialogue' field ONLY contains exact words being spoken. If it contains descriptions of music or action, move those to 'sfx_music' or 'visual_prompt' and leave 'spoken_dialogue' empty.
 
 CRITICAL: ONLY valid JSON. NEVER use unescaped double quotes.
 """
@@ -188,5 +186,6 @@ def analyze_and_extract_scenes(video_url: str, target_duration: int, creative_di
 
     output_str = f"=== STRATEGY ===\n{final_storyboard.macro_strategy}\n\n=== STORYBOARD ===\n[MASTER AUDIO]\n{final_storyboard.master_audio}\n\n"
     for scene in final_storyboard.scenes:
-        output_str += f"SCENE {scene.scene_number}\nTimestamp: {scene.timestamp}\nKeyframe: {scene.keyframe_time}\nVisual: {scene.visual_prompt}\nMotion: {scene.motion}\nSpoken Dialogue: {scene.spoken_dialogue}\nSFX/Music: {scene.sfx_music}\nAssigned Assets: {json.dumps(scene.assigned_assets)}\n\n"
+        # SURGICAL FIX 3: Inject the Keyframe line into the output string so frame_designer.py can regex it
+        output_str += f"SCENE {scene.scene_number}\nTimestamp: {scene.timestamp}\nKeyframe: {scene.keyframe_time}\nVisual: {scene.visual_prompt}\nMotion: {scene.motion}\nAudio: {scene.audio}\nAssigned Assets: {json.dumps(scene.assigned_assets)}\n\n"
     return output_str.strip()
