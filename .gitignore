@@ -1,15 +1,22 @@
+# Secrets
 .env
+
+# Python
 __pycache__/
 *.pyc
-outputs/
 .venv/
 venv/
+
+# Logs & OS
 *.log
 .DS_Store
-downloads/
+repo_structure.txt
+
+# Old pipeline tree (removed)
 app/pipeline/
-segments/
-frames/frames/
+
+# Generated runtime artifacts
+outputs/
+downloads/
 segments/
 frames/
-segments/

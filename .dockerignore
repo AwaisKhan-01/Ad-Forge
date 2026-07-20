@@ -1,0 +1,26 @@
+# Secrets — never send to the build context or image
+.env
+.env.*
+!.env.example
+
+# Generated runtime artifacts (large; not part of the image)
+frames/
+segments/
+outputs/
+downloads/
+
+# Python caches / virtualenvs
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Git & CI metadata
+.git/
+.github/
+.gitignore
+
+# Editor / OS cruft
+.DS_Store
+*.log
+repo_structure.txt
