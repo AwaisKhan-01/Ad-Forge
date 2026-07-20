@@ -235,7 +235,14 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
                     image_model_choice = gr.Dropdown(
                         choices=[(m["label"], key) for key, m in IMAGE_MODELS.items()],
                         value=DEFAULT_IMAGE_MODEL, label="Image Model")
-                    # Size + Quality only apply to models that support them (GPT Image 2).
+
+                    # Aspect ratio is the OUTPUT/video aspect ratio (always used by
+                    # the final video render, and by Nano Banana for images). Keep it
+                    # always visible. GPT Image 2 additionally exposes image_size +
+                    # quality, which only appear when GPT is selected.
+                    aspect_ratio_choice = gr.Dropdown(
+                        choices=["16:9", "9:16", "1:1"], value="16:9",
+                        label="Aspect Ratio (Output / Video)")
                     _gpt = IMAGE_MODELS["gpt-image-2"]
                     image_size_choice = gr.Dropdown(
                         choices=_gpt["sizes"], value=_gpt["sizes"][0],
@@ -244,14 +251,15 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
                         choices=_gpt["qualities"], value="medium",
                         label="Image Quality (GPT Image 2 — 'medium' costs less)", visible=False)
 
-                    def _toggle_size(model_key):
-                        show = IMAGE_MODELS.get(model_key, {}).get("supports_size", False)
-                        return gr.update(visible=show), gr.update(visible=show)
+                    def _toggle_image_controls(model_key):
+                        supports_size = IMAGE_MODELS.get(model_key, {}).get("supports_size", False)
+                        return (
+                            gr.update(visible=supports_size),  # image_size
+                            gr.update(visible=supports_size),  # image_quality
+                        )
                     image_model_choice.change(
-                        fn=_toggle_size, inputs=[image_model_choice],
+                        fn=_toggle_image_controls, inputs=[image_model_choice],
                         outputs=[image_size_choice, image_quality_choice])
-
-                    aspect_ratio_choice = gr.Dropdown(choices=["16:9", "9:16", "1:1"], value="16:9", label="Aspect Ratio (Nano Banana)")
 
                     font_choices = [
                         ("No Text", "NO_TEXT"),
