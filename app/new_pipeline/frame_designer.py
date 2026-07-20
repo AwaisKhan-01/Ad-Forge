@@ -307,9 +307,17 @@ def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: 
 
     has_assets = len(image_urls) > 1  # >1 means real user assets are attached
     if has_assets:
+        # The keyframe (#image1) guides composition/lighting, but the ASSET is the
+        # true subject. Phrase it so the model builds the described scene around the
+        # asset and uses #image1 as a layout/style reference — NOT as a rigid
+        # composition to preserve. This avoids the "keep this laptop-screen layout
+        # AND put a person here" contradiction when the keyframe happens to show a
+        # different shot type than the described subject.
         design_prompt = (
-            f"Edit #image1, keeping its composition, camera angle and lighting. "
-            f"{sterilized_phrase}"
+            f"Generate this scene using #image1 as a composition, framing and lighting reference: "
+            f"{sterilized_phrase} "
+            f"The subject and content must match the description above; adapt the framing "
+            f"from #image1 rather than copying its exact contents."
         )
     else:
         design_prompt = (

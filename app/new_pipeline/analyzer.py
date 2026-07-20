@@ -95,6 +95,7 @@ RULES:
 4. FREEZE TIME (CRITICAL): The 'visual_prompt' MUST describe a STILL PHOTOGRAPH. NO TIMELINES. NO SEQUENCES. You are STRICTLY FORBIDDEN from using the word "then". Put all camera movement in the 'motion' field.
 5. ESCAPING: NEVER use unescaped double quotes inside values. Use single quotes.
 6. EXPLICIT KEYFRAME TARGETING: You must provide a 'keyframe_time' (e.g. '00:05'). This must be the EXACT second within the timestamp block that perfectly visually matches your static 'visual_prompt'.
+7. KEYFRAME SUBJECT MATCH (CRITICAL): The frame at 'keyframe_time' will be extracted from the source video and used as the composition base for image generation. It MUST actually contain the primary subject you describe in 'visual_prompt'. If your visual_prompt describes a PERSON (e.g. the on-screen actor speaking), 'keyframe_time' MUST point at a second where that PERSON is clearly on screen — NOT a second showing a UI screen, product shot, logo, or B-roll. If the scene is about the talking person, pick a timestamp block AND keyframe_time where the person's face/body is visible. Do NOT set keyframe_time to a moment showing a screen/graphic when the visual_prompt is about a person, or vice versa — the base frame and the described subject must be the SAME type of shot.
 
 OUTPUT FORMAT:
 You must output pure JSON matching this schema:
@@ -140,6 +141,7 @@ QA TASK (FIX ERRORS DIRECTLY IN THE JSON):
 2. ENFORCE ASSET MAPPING: Did the draft assign assets to the correct scenes based on the USER ASSET INSTRUCTIONS? If the draft left 'assigned_assets' empty `[]` but the subject is clearly in the scene, YOU MUST FIX IT by adding the integer to the array (e.g., `[0]`) and injecting `#Asset0` into the visual_prompt.
 3. ENFORCE TIME FREEZE: Read every 'visual_prompt'. If you see the word "then" or any sequential action (e.g., "walks in, then sits"), DELETE IT. Rewrite it to describe a single, frozen moment.
 4. KEYFRAME INTEGRITY: Ensure 'keyframe_time' is present and accurately reflects a static moment within the scene's 'timestamp'.
+5. KEYFRAME SUBJECT MATCH (CRITICAL): For each scene, verify the frame at 'keyframe_time' actually shows the SAME subject type as the 'visual_prompt'. If visual_prompt describes a PERSON but keyframe_time points at a screen/UI/product/logo/B-roll moment (or vice versa), FIX keyframe_time (and the 'timestamp' block if needed) to a second where the described subject is genuinely on screen. The extracted base frame must match the described subject.
 
 CRITICAL: ONLY valid JSON. NEVER use unescaped double quotes.
 """
