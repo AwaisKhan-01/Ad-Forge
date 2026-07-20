@@ -167,9 +167,11 @@ def _process_single_video_segment(idx: int, scene: Dict, seg_duration: float, to
         else:
             safe_audio = scene_audio.replace('"', '').replace("'", "")
             isolated_prompt += (
-                f' The subject is speaking exactly these words: "{safe_audio}". '
-                f'CRITICAL TIMING: Start the video clip cleanly without the text. '
-                f'The typography must dynamically animate and reveal itself ON SCREEN ONLY as the subject begins speaking.'
+                f' The subject speaks these exact words in a natural, warm, conversational human voice: "{safe_audio}". '
+                f'VOICE DIRECTION: Authentic real-person delivery with natural intonation, breath, and pacing — '
+                f'relaxed and expressive, NOT robotic, monotone, flat, or synthetic. Match the tone and vocal '
+                f'identity of the reference person; keep the same speaker throughout. Accurate lip-sync. '
+                f'CRITICAL TIMING: Start the clip cleanly without text; typography animates on screen only as the subject begins speaking.'
             )
         
     elif scene_audio and "Motion Graphic" in production_type:

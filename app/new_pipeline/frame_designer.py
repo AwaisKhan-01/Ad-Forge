@@ -13,9 +13,58 @@ import concurrent.futures
 from typing import List, Dict
 from app.new_pipeline.uploader import upload_video
 
-IMAGE_EDIT_MODEL = "fal-ai/nano-banana-2/edit"
+IMAGE_EDIT_MODEL = "fal-ai/nano-banana-2/edit"  # kept for backwards-compat / default
 TEXT_LLM_MODEL = "fal-ai/llama-3.1-8b-instruct"
 FRAMES_DIR = "frames"
+
+# ==========================================
+# IMAGE MODEL REGISTRY
+# ==========================================
+# Each entry describes how to talk to one image-edit model. The UI lets the user
+# pick which model + (for models that support it) which size/quality to use.
+#   - "endpoint": fal model id
+#   - "supports_size": whether the model takes an image_size preset (gpt-image-2)
+#                      vs only aspect_ratio (nano-banana)
+#   - "sizes": allowed image_size preset strings (empty if not supported)
+#   - "qualities": allowed quality tiers (empty if not supported)
+#   - "pricing": per-image USD cost keyed by (size, quality); used by CostTracker
+IMAGE_MODELS = {
+    "nano-banana-2-edit": {
+        "label": "Nano Banana 2 (Edit)",
+        "endpoint": "fal-ai/nano-banana-2/edit",
+        "supports_size": False,
+        "sizes": [],
+        "qualities": [],
+        # Flat estimate — nano-banana has no size/quality tiers on fal.
+        "flat_price": 0.015,
+    },
+    "gpt-image-2": {
+        "label": "GPT Image 2 (Edit)",
+        "endpoint": "fal-ai/gpt-image-2/image-to-image",
+        "supports_size": True,
+        "sizes": ["landscape_4_3", "square_hd", "portrait_4_3", "landscape_16_9"],
+        "qualities": ["low", "medium", "high"],
+        # fal per-image pricing by (image_size, quality). Sizes map to pixel dims:
+        #   landscape_4_3 = 1024x768, portrait_4_3 = 768x1024, landscape_16_9 = 1024x576
+        #   square_hd = 1024x1024. 16:9 priced same tier as the 1024x768 bracket.
+        "pricing": {
+            ("landscape_4_3", "low"): 0.005, ("landscape_4_3", "medium"): 0.037, ("landscape_4_3", "high"): 0.145,
+            ("portrait_4_3", "low"): 0.005, ("portrait_4_3", "medium"): 0.037, ("portrait_4_3", "high"): 0.145,
+            ("landscape_16_9", "low"): 0.005, ("landscape_16_9", "medium"): 0.037, ("landscape_16_9", "high"): 0.145,
+            ("square_hd", "low"): 0.006, ("square_hd", "medium"): 0.053, ("square_hd", "high"): 0.211,
+        },
+    },
+}
+
+DEFAULT_IMAGE_MODEL = "nano-banana-2-edit"
+
+
+def image_price(model_key: str, image_size: str = "", quality: str = "") -> float:
+    """Per-image USD cost for the chosen model/size/quality (best-effort estimate)."""
+    m = IMAGE_MODELS.get(model_key, IMAGE_MODELS[DEFAULT_IMAGE_MODEL])
+    if not m["supports_size"]:
+        return m.get("flat_price", 0.015)
+    return m.get("pricing", {}).get((image_size, quality), 0.05)
 
 # ==========================================
 # TYPOGRAPHY PRESET REGISTRY
@@ -191,7 +240,7 @@ def parse_extracted_scenes(extracted_text: str) -> List[Dict]:
 
     return scenes
 
-def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: str, aspect_ratio: str, selected_font_style: str = "chunky_display") -> Dict:
+def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: str, aspect_ratio: str, selected_font_style: str = "chunky_display", image_model: str = DEFAULT_IMAGE_MODEL, image_size: str = "", image_quality: str = "high") -> Dict:
     target_time = parse_keyframe_to_seconds(scene.get('keyframe_time', '00:00'))
     print(f"\n[EXTRACTING] Scene {scene.get('scene_number')} -> Exact Keyframe Target: {target_time:.2f}s")
     
@@ -279,46 +328,63 @@ def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: 
 
     design_prompt += ", cinematic lighting, professional composition, clean"
 
-    # LOW strength preserves the keyframe; higher gives room to swap assets in.
-    edit_strength = 0.55 if has_assets else 0.25
+    # --- Build model-specific args ---
+    model_cfg = IMAGE_MODELS.get(image_model, IMAGE_MODELS[DEFAULT_IMAGE_MODEL])
+    endpoint = model_cfg["endpoint"]
 
-    args = {
-        "prompt": design_prompt,
-        "image_urls": image_urls,
-        "aspect_ratio": aspect_ratio,
-        "strength": edit_strength,
-        "negative_prompt": "ugly, deformed, blurry text, double letters, messy layout, generic sans-serif, standard subtitle boxes, hallucinated faces, overprocessed, deep-fried AI, cluttered, noisy"
-    }
-    
+    if model_cfg["supports_size"]:
+        # GPT Image 2: uses image_size preset + quality tier (no strength/aspect_ratio).
+        size = image_size if image_size in model_cfg["sizes"] else (model_cfg["sizes"][0] if model_cfg["sizes"] else "square_hd")
+        quality = image_quality if image_quality in model_cfg["qualities"] else "high"
+        args = {
+            "prompt": design_prompt,
+            "image_urls": image_urls,
+            "image_size": size,
+            "quality": quality,
+        }
+        payload_note = f"{model_cfg['label']} | size={size} quality={quality}"
+    else:
+        # Nano Banana: aspect_ratio + denoising strength (unchanged behavior).
+        # LOW strength preserves the keyframe; higher gives room to swap assets in.
+        edit_strength = 0.55 if has_assets else 0.25
+        args = {
+            "prompt": design_prompt,
+            "image_urls": image_urls,
+            "aspect_ratio": aspect_ratio,
+            "strength": edit_strength,
+            "negative_prompt": "ugly, deformed, blurry text, double letters, messy layout, generic sans-serif, standard subtitle boxes, hallucinated faces, overprocessed, deep-fried AI, cluttered, noisy"
+        }
+        payload_note = f"{model_cfg['label']} | aspect={aspect_ratio} strength={edit_strength}"
+
     try:
-        print(f"      [SCENE {scene.get('scene_number')} PAYLOAD] Typography: {selected_font_style} | Prompt: {design_prompt}")
-        result = fal_client.subscribe(IMAGE_EDIT_MODEL, arguments=args)
+        print(f"      [SCENE {scene.get('scene_number')} PAYLOAD] {payload_note} | Typography: {selected_font_style} | Prompt: {design_prompt}")
+        result = fal_client.subscribe(endpoint, arguments=args)
         if result and "images" in result:
             scene["generated_image_url"] = result["images"][0]["url"]
         else:
             scene["generated_image_url"] = None
     except Exception as e:
         print(f"Error on Scene {scene.get('scene_number')}: {e}")
-        scene["generated_image_url"] = None 
-        
+        scene["generated_image_url"] = None
+
     scene["visual_prompt_sterilized"] = sterilized_phrase
     return scene
 
-def generate_storyboard_frames(extracted_text: str, uploaded_assets: List[str], local_video_path: str, aspect_ratio: str = "9:16", selected_font_style: str = "chunky_display") -> List[Dict]:
+def generate_storyboard_frames(extracted_text: str, uploaded_assets: List[str], local_video_path: str, aspect_ratio: str = "9:16", selected_font_style: str = "chunky_display", image_model: str = DEFAULT_IMAGE_MODEL, image_size: str = "", image_quality: str = "high") -> List[Dict]:
     scenes = parse_extracted_scenes(extracted_text)
     if not scenes:
         raise ValueError("Could not parse scenes. Check VLM Agent output format.")
-        
+
     asset_urls = []
     if uploaded_assets:
         for asset in uploaded_assets:
             if asset:
                 url = upload_video(asset) if not asset.startswith("http") else asset
                 asset_urls.append(url)
-            
+
     storyboard_results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {executor.submit(_process_single_scene, scene, asset_urls, local_video_path, aspect_ratio, selected_font_style): scene for scene in scenes}
+        futures = {executor.submit(_process_single_scene, scene, asset_urls, local_video_path, aspect_ratio, selected_font_style, image_model, image_size, image_quality): scene for scene in scenes}
         for future in concurrent.futures.as_completed(futures):
             storyboard_results.append(future.result())
             

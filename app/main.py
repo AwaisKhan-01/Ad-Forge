@@ -11,7 +11,7 @@ from app.new_pipeline.model_registry import MODELS
 from app.new_pipeline.cost_tracker import CostTracker
 
 from app.new_pipeline.analyzer import analyze_and_extract_scenes
-from app.new_pipeline.frame_designer import generate_storyboard_frames, _process_single_scene, parse_extracted_scenes
+from app.new_pipeline.frame_designer import generate_storyboard_frames, _process_single_scene, parse_extracted_scenes, IMAGE_MODELS, DEFAULT_IMAGE_MODEL
 from app.new_pipeline.generator import generate_final_video, regenerate_single_segment
 
 # --- SLEEK ENTERPRISE CSS ---
@@ -62,14 +62,21 @@ def step2_extract_scenes(api_key, local_video_path, creative_directive, target_d
     except Exception as e:
         return f"PIPELINE ERROR: {str(e)}"
 
-def step3_generate_storyboard(api_key, edited_prompts, uploaded_assets, local_video_path, aspect_ratio, font_style):
+def step3_generate_storyboard(api_key, edited_prompts, uploaded_assets, local_video_path, aspect_ratio, font_style, image_model, image_size, image_quality):
     set_fal_key(api_key)
     if not edited_prompts:
         return [], None
     asset_paths = uploaded_assets if uploaded_assets else []
     try:
-        storyboard_data = generate_storyboard_frames(edited_prompts, asset_paths, local_video_path, aspect_ratio, font_style)
-        
+        storyboard_data = generate_storyboard_frames(edited_prompts, asset_paths, local_video_path, aspect_ratio, font_style, image_model, image_size, image_quality)
+
+        # Stamp the image-gen settings onto each frame so the final cost estimate
+        # (step 4) can price the images with the actual model/size/quality used.
+        for frame in storyboard_data:
+            frame["image_model"] = image_model
+            frame["image_size"] = image_size
+            frame["image_quality"] = image_quality
+
         # --- SURGICAL FIX: Update Gallery Captions for Split Schema ---
         gallery_format = []
         for frame in storyboard_data:
@@ -82,7 +89,7 @@ def step3_generate_storyboard(api_key, edited_prompts, uploaded_assets, local_vi
         print(f"Storyboard compilation error: {str(e)}")
         return [], None
 
-def step3_regenerate_single(api_key, edited_prompts, scene_num_to_regen, uploaded_assets, local_video_path, aspect_ratio, font_style, current_storyboard_state):
+def step3_regenerate_single(api_key, edited_prompts, scene_num_to_regen, uploaded_assets, local_video_path, aspect_ratio, font_style, current_storyboard_state, image_model, image_size, image_quality):
     set_fal_key(api_key)
     if not current_storyboard_state or not scene_num_to_regen:
         return gr.update(), current_storyboard_state
@@ -100,7 +107,7 @@ def step3_regenerate_single(api_key, edited_prompts, scene_num_to_regen, uploade
                 url = upload_video(asset) if not asset.startswith("http") else asset
                 asset_urls.append(url)
                 
-        updated_scene = _process_single_scene(target_scene_data, asset_urls, local_video_path, aspect_ratio, font_style)
+        updated_scene = _process_single_scene(target_scene_data, asset_urls, local_video_path, aspect_ratio, font_style, image_model, image_size, image_quality)
         
         for idx, old_scene in enumerate(current_storyboard_state):
             if str(old_scene["scene_number"]) == str(scene_num_to_regen):
@@ -133,7 +140,15 @@ def step4_generate_final(api_key, storyboard_frames, final_instructions, model_c
 
     tracker = CostTracker()
     tracker.add_analysis_call()
-    tracker.add_image_generation_calls(len(storyboard_frames))
+    # Price the images with the model/size/quality actually used in step 3
+    # (stamped onto each frame). Falls back to defaults for older state.
+    _first = storyboard_frames[0] if storyboard_frames else {}
+    tracker.add_image_generation_calls(
+        len(storyboard_frames),
+        image_model=_first.get("image_model", DEFAULT_IMAGE_MODEL),
+        image_size=_first.get("image_size", ""),
+        image_quality=_first.get("image_quality", "high"),
+    )
 
     try:
         result = generate_final_video(
@@ -216,8 +231,28 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
         with gr.TabItem("2. Storyboard Engine"):
             with gr.Row(elem_classes="panel-box"):
                 with gr.Column(scale=1):
-                    aspect_ratio_choice = gr.Dropdown(choices=["16:9", "9:16", "1:1"], value="16:9", label="Aspect Ratio")
-                    
+                    # --- Image model selection ---
+                    image_model_choice = gr.Dropdown(
+                        choices=[(m["label"], key) for key, m in IMAGE_MODELS.items()],
+                        value=DEFAULT_IMAGE_MODEL, label="Image Model")
+                    # Size + Quality only apply to models that support them (GPT Image 2).
+                    _gpt = IMAGE_MODELS["gpt-image-2"]
+                    image_size_choice = gr.Dropdown(
+                        choices=_gpt["sizes"], value=_gpt["sizes"][0],
+                        label="Image Size (GPT Image 2)", visible=False)
+                    image_quality_choice = gr.Dropdown(
+                        choices=_gpt["qualities"], value="medium",
+                        label="Image Quality (GPT Image 2 — 'medium' costs less)", visible=False)
+
+                    def _toggle_size(model_key):
+                        show = IMAGE_MODELS.get(model_key, {}).get("supports_size", False)
+                        return gr.update(visible=show), gr.update(visible=show)
+                    image_model_choice.change(
+                        fn=_toggle_size, inputs=[image_model_choice],
+                        outputs=[image_size_choice, image_quality_choice])
+
+                    aspect_ratio_choice = gr.Dropdown(choices=["16:9", "9:16", "1:1"], value="16:9", label="Aspect Ratio (Nano Banana)")
+
                     font_choices = [
                         ("No Text", "NO_TEXT"),
                         ("Chunky Display (Bold & Playful)", "chunky_display"),
@@ -281,14 +316,14 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
     )
     
     btn_generate_storyboard.click(
-        fn=step3_generate_storyboard, 
-        inputs=[api_key_input, extracted_prompts, uploaded_assets, preview_video, aspect_ratio_choice, font_style_choice], 
+        fn=step3_generate_storyboard,
+        inputs=[api_key_input, extracted_prompts, uploaded_assets, preview_video, aspect_ratio_choice, font_style_choice, image_model_choice, image_size_choice, image_quality_choice],
         outputs=[storyboard_gallery, state_storyboard_frames]
     )
-    
+
     btn_regen_single.click(
-        fn=step3_regenerate_single, 
-        inputs=[api_key_input, extracted_prompts, scene_num_input, uploaded_assets, preview_video, aspect_ratio_choice, font_style_choice, state_storyboard_frames], 
+        fn=step3_regenerate_single,
+        inputs=[api_key_input, extracted_prompts, scene_num_input, uploaded_assets, preview_video, aspect_ratio_choice, font_style_choice, state_storyboard_frames, image_model_choice, image_size_choice, image_quality_choice],
         outputs=[storyboard_gallery, state_storyboard_frames]
     )
     

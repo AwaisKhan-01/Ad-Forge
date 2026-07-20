@@ -38,8 +38,19 @@ class CostTracker:
     def add_caption_call(self):
         self.caption_calls += 1
         
-    def add_image_generation_calls(self, count: int):
-        self.image_generation_cost += count * NANO_BANANA_ESTIMATE
+    def add_image_generation_calls(self, count: int, image_model: str = "nano-banana-2-edit",
+                                   image_size: str = "", image_quality: str = "high"):
+        """Bill image generation using the real per-model/size/quality price.
+
+        Falls back to the flat nano estimate if the registry can't be consulted,
+        so this never crashes a run.
+        """
+        try:
+            from app.new_pipeline.frame_designer import image_price
+            per_image = image_price(image_model, image_size, image_quality)
+        except Exception:
+            per_image = NANO_BANANA_ESTIMATE
+        self.image_generation_cost += count * per_image
 
     def total(self) -> dict:
         aux_cost = (self.fusion_calls * FUSION_CALL_ESTIMATE) + (self.caption_calls * CAPTION_CALL_ESTIMATE)
