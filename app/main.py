@@ -15,58 +15,66 @@ from app.new_pipeline.frame_designer import generate_storyboard_frames, _process
 from app.new_pipeline.generator import generate_final_video, regenerate_single_segment
 
 # --- THEME & CSS ---
-# Gradio 6 renamed many internal button classes; target buttons by variant via
-# the stable `button` element + Gradio's own `.primary`/`.secondary` variant
-# classes rather than the old `.gr-button-*` names (which silently no-op now).
+# Build the dark look through the THEME token system (correct approach) so inputs,
+# panels, text and buttons are consistent — rather than fighting Gradio defaults
+# with !important overrides. CSS below is minimal: header, spacing, tab accents.
+THEME = gr.themes.Soft(
+    primary_hue="violet",
+    secondary_hue="indigo",
+    neutral_hue="slate",
+    font=[gr.themes.GoogleFont("Inter"), "system-ui", "sans-serif"],
+).set(
+    # Surfaces
+    body_background_fill="#0b0f19",
+    background_fill_primary="#0b0f19",
+    background_fill_secondary="#111827",
+    block_background_fill="#111827",
+    block_border_color="#1f2937",
+    block_border_width="1px",
+    block_radius="14px",
+    block_label_background_fill="#111827",
+    block_label_text_color="#cbd5e1",
+    panel_background_fill="#111827",
+    # Inputs — THIS is what fixes the light textboxes
+    input_background_fill="#0b0f19",
+    input_background_fill_focus="#0b0f19",
+    input_border_color="#374151",
+    input_border_color_focus="#8b5cf6",
+    input_radius="10px",
+    # Text
+    body_text_color="#e5e7eb",
+    body_text_color_subdued="#9ca3af",
+    # Buttons
+    button_primary_background_fill="linear-gradient(90deg, #6366f1 0%, #8b5cf6 100%)",
+    button_primary_background_fill_hover="linear-gradient(90deg, #7c7ff5 0%, #9d6dff 100%)",
+    button_primary_text_color="#ffffff",
+    button_secondary_background_fill="#1f2937",
+    button_secondary_background_fill_hover="#374151",
+    button_secondary_text_color="#e5e7eb",
+    button_large_radius="10px",
+    button_small_radius="8px",
+)
+
 CUSTOM_CSS = """
-.gradio-container { font-family: 'Inter', system-ui, sans-serif; max-width: 1280px; margin: 0 auto; }
+.gradio-container { max-width: 1200px !important; margin: 0 auto !important; }
 
 #header-container {
-  text-align: center; margin-bottom: 24px; padding: 28px 20px;
-  background: linear-gradient(120deg, #1e1b4b 0%, #312e81 55%, #4c1d95 100%);
-  border-radius: 16px; border: 1px solid #4338ca;
-  box-shadow: 0 8px 28px rgba(49, 46, 129, 0.35);
+  text-align: center; margin-bottom: 8px; padding: 24px 20px 20px;
+  background: radial-gradient(120% 140% at 50% -10%, #4c1d95 0%, #312e81 45%, #14173100 100%);
+  border-radius: 18px; border: 1px solid #3730a3;
 }
-#header-container h1 { font-weight: 800; letter-spacing: -0.02em; }
-h1, h2, h3, h4, p, label span { color: #f3f4f6 !important; }
+#header-container h1 { font-weight: 800; letter-spacing: -0.02em; margin: 0; }
+#header-container p { color: #c7d2fe !important; margin-top: 4px; }
 
-.panel-box {
-  border-radius: 14px !important; border: 1px solid #1f2937 !important;
-  background-color: #111827 !important; padding: 18px !important;
-  box-shadow: 0 4px 14px rgba(0,0,0,0.25);
-}
+/* Step helper text under each tab title */
+.step-hint p { color: #94a3b8 !important; font-size: 0.92em; margin: 4px 0 14px 0; }
 
-/* Buttons — Gradio 6 uses variant classes on the <button> element */
-button.primary, .primary button {
-  background: linear-gradient(90deg, #6366f1 0%, #8b5cf6 100%) !important;
-  border: none !important; font-weight: 600 !important;
-  box-shadow: 0 2px 12px rgba(139, 92, 246, 0.45) !important;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
-}
-button.primary:hover, .primary button:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 18px rgba(139, 92, 246, 0.7) !important;
-}
-button.secondary, .secondary button {
-  background: #1f2937 !important; border: 1px solid #374151 !important;
-  transition: background 0.15s ease;
-}
-button.secondary:hover, .secondary button:hover { background: #374151 !important; }
+/* Tab accent */
+.tab-nav button.selected { color: #c4b5fd !important; }
 
-/* Tabs */
-.tab-nav button { font-weight: 600 !important; }
-.tab-nav button.selected { color: #a78bfa !important; border-bottom: 2px solid #8b5cf6 !important; }
-
-/* Step helper text under tab titles */
-.step-hint p { color: #9ca3af !important; font-size: 0.9em; margin: 2px 0 10px 0; }
-.status-ok textarea { color: #86efac !important; }
+/* Give panels a touch more breathing room */
+.panel-box { padding: 16px !important; }
 """
-
-THEME = gr.themes.Base(primary_hue="indigo", neutral_hue="slate").set(
-    body_background_fill="#0b0f19", block_background_fill="#111827",
-    block_border_color="#1f2937", button_primary_background_fill="#6366f1",
-    block_radius="14px", button_large_radius="10px",
-)
 
 def set_fal_key(api_key: str):
     if not api_key or not api_key.strip():
@@ -296,37 +304,40 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
         with gr.TabItem("1 · Strategy & Assets"):
             gr.Markdown("Fetch a reference ad, add your brand assets, and generate the editable script.",
                         elem_classes="step-hint")
-            with gr.Row():
-                with gr.Column(scale=1, elem_classes="panel-box"):
+            with gr.Row(elem_classes="panel-box"):
+                # LEFT: source video + preview
+                with gr.Column(scale=1, min_width=280):
                     gr.Markdown("### 📥 Source Material")
                     ad_url = gr.Textbox(label="Reference Ad URL", placeholder="Paste an inspiration video link…")
                     btn_download = gr.Button("Fetch Source", variant="secondary")
-                    preview_video = gr.Video(label="Source Video", height=300)
+                    preview_video = gr.Video(label="Source Video", height=340)
 
-                    gr.Markdown("### ⚙️ Production Settings")
-                    # (label shown to user, value passed to pipeline). Values are
-                    # prefix-free so they match production_type checks downstream;
-                    # unsupported formats are marked but selectable for preview.
-                    production_choices = [
-                        ("✅ Narrative Ad (On-Screen Actor / Dialogue)", "Narrative Ad (On-Screen Actor / Dialogue)"),
-                        ("✅ Narrative Ad (Voiceover focused)", "Narrative Ad (Voiceover focused)"),
-                        ("🚧 Narrative Ad (No Voiceover — Text/Music)", "Narrative Ad (No Voiceover - Text/Music focused)"),
-                        ("🚧 Motion Graphic (SFX & Music)", "Motion Graphic (SFX & Music focused)"),
-                    ]
-                    production_type = gr.Dropdown(choices=production_choices,
-                                                  value="Narrative Ad (On-Screen Actor / Dialogue)",
-                                                  label="Format Variant")
-                    duration_choice = gr.Slider(minimum=3, maximum=60, step=1, value=15, label="Target Duration (sec)")
-
-                with gr.Column(scale=1, elem_classes="panel-box"):
+                # RIGHT: assets, directive, production settings, action
+                with gr.Column(scale=1, min_width=280):
                     gr.Markdown("### 🎨 Brand Assets & Directives")
-                    uploaded_assets = gr.File(label="Assets (faces, logos, UI screens — drop or browse)", file_count="multiple", type="filepath", height=150)
-                    creative_directive = gr.Textbox(label="Creative Directive", placeholder="E.g., 'Asset 1 is my UI dashboard. Asset 2 is my logo. Swap out the original product for Asset 1.'", lines=4)
+                    uploaded_assets = gr.File(label="Assets — faces, logos, UI screens", file_count="multiple", type="filepath", height=120)
+                    creative_directive = gr.Textbox(label="Creative Directive", lines=3,
+                        placeholder="E.g. 'Asset 1 is my UI dashboard, Asset 2 my logo. Swap the original product for Asset 1.'")
+
+                    with gr.Row():
+                        # (label, value) — values prefix-free so downstream checks match;
+                        # unsupported formats marked 🚧 but selectable.
+                        production_choices = [
+                            ("✅ On-Screen Actor / Dialogue", "Narrative Ad (On-Screen Actor / Dialogue)"),
+                            ("✅ Voiceover focused", "Narrative Ad (Voiceover focused)"),
+                            ("🚧 No Voiceover — Text/Music", "Narrative Ad (No Voiceover - Text/Music focused)"),
+                            ("🚧 Motion Graphic (SFX & Music)", "Motion Graphic (SFX & Music focused)"),
+                        ]
+                        production_type = gr.Dropdown(choices=production_choices,
+                                                      value="Narrative Ad (On-Screen Actor / Dialogue)",
+                                                      label="Format Variant")
+                    duration_choice = gr.Slider(minimum=3, maximum=60, step=1, value=15, label="Target Duration (sec)")
 
                     btn_extract = gr.Button("🧠 Analyze Strategy & Compute Pacing", variant="primary", interactive=False)
 
             with gr.Row(elem_classes="panel-box"):
-                extracted_prompts = gr.Textbox(label="AI Strategy & Dynamic Script (Editable)", lines=12, interactive=True)
+                extracted_prompts = gr.Textbox(label="AI Strategy & Dynamic Script (editable)", lines=14, interactive=True,
+                                               placeholder="Your generated storyboard script will appear here after analysis. You can edit it before rendering.")
                 
         with gr.TabItem("2 · Storyboard"):
             gr.Markdown("Pick an image model and style, then render the still frames for each scene. "
