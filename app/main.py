@@ -186,13 +186,13 @@ def step4_rerender_segment(api_key, segments_state, scene_number, resolution, pr
 with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
     with gr.Column(elem_id="header-container"):
         gr.Markdown("# ⚡ AdForge Studio Pro")
-        gr.Markdown("Enterprise-Grade AI Concept Transfer Engine")
-        
+        gr.Markdown("Turn any reference ad into your own branded video — in four steps.")
+
         with gr.Row():
             api_key_input = gr.Textbox(
-                label="🔑 Secure FAL API Key", 
-                type="password", 
-                placeholder="Paste your fal_key_... here to authorize generation",
+                label="🔑 FAL API Key",
+                type="password",
+                placeholder="Paste your fal_… key to authorize generation",
                 elem_classes="panel-box"
             )
     
@@ -200,35 +200,41 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
     state_video_segments = gr.State()   # per-segment render state for chunk recovery
 
     with gr.Tabs():
-        with gr.TabItem("1. Strategy & Assets"):
+        with gr.TabItem("1 · Strategy & Assets"):
+            gr.Markdown("Fetch a reference ad, add your brand assets, and generate the editable script.")
             with gr.Row():
                 with gr.Column(scale=1, elem_classes="panel-box"):
                     gr.Markdown("### 📥 Source Material")
-                    ad_url = gr.Textbox(label="Reference Ad URL", placeholder="Paste inspiration video link...", show_label=False)
+                    ad_url = gr.Textbox(label="Reference Ad URL", placeholder="Paste an inspiration video link…", show_label=False)
                     btn_download = gr.Button("Fetch Source", variant="secondary")
                     preview_video = gr.Video(label="Source Video", height=300)
-                    
+
                     gr.Markdown("### ⚙️ Production Settings")
+                    # (label, value): values stay prefix-free so downstream checks
+                    # match; ✅ = supported, 🚧 = not yet.
                     production_choices = [
-                        "✓ Narrative Ad (On-Screen Actor / Dialogue)", 
-                        "✓ Narrative Ad (Voiceover focused)", 
-                        "x Narrative Ad (No Voiceover - Text/Music focused)", 
-                        "x Motion Graphic (SFX & Music focused)"
+                        ("✅ On-Screen Actor / Dialogue", "Narrative Ad (On-Screen Actor / Dialogue)"),
+                        ("✅ Voiceover focused", "Narrative Ad (Voiceover focused)"),
+                        ("🚧 No Voiceover — Text / Music", "Narrative Ad (No Voiceover - Text/Music focused)"),
+                        ("🚧 Motion Graphic (SFX & Music)", "Motion Graphic (SFX & Music focused)"),
                     ]
-                    production_type = gr.Dropdown(choices=production_choices, value="Narrative Ad (On-Screen Actor / Dialogue)", label="Format Variant")
+                    production_type = gr.Dropdown(choices=production_choices, value="Narrative Ad (On-Screen Actor / Dialogue)", label="Format")
                     duration_choice = gr.Slider(minimum=3, maximum=60, step=1, value=15, label="Target Duration (sec)")
-                    
+
                 with gr.Column(scale=1, elem_classes="panel-box"):
                     gr.Markdown("### 🎨 Brand Assets & Directives")
-                    uploaded_assets = gr.File(label="Asset Hopper (Drop Faces, Logos, UI Screens here)", file_count="multiple", type="filepath", height=150)
-                    creative_directive = gr.Textbox(label="Creative Directive", placeholder="E.g., 'Asset 1 is my UI dashboard. Asset 2 is my logo. Swap out the original product for Asset 1.'", lines=4)
-                    
+                    uploaded_assets = gr.File(label="Brand Assets — faces, logos, UI screens", file_count="multiple", type="filepath", height=150)
+                    creative_directive = gr.Textbox(label="Creative Directive", placeholder="E.g. 'Asset 1 is my UI dashboard, Asset 2 my logo. Swap the original product for Asset 1.'", lines=4)
+
                     btn_extract = gr.Button("🧠 Analyze Strategy & Compute Pacing", variant="primary", interactive=False)
-                    
+
             with gr.Row(elem_classes="panel-box"):
-                extracted_prompts = gr.Textbox(label="AI Strategy & Dynamic Script (Editable)", lines=12, interactive=True)
+                extracted_prompts = gr.Textbox(label="AI Strategy & Script (editable)", lines=12, interactive=True,
+                                               placeholder="Your generated storyboard script appears here after analysis. Edit it freely before rendering.")
                 
-        with gr.TabItem("2. Storyboard Engine"):
+        with gr.TabItem("2 · Storyboard"):
+            gr.Markdown("Pick an image model and style, then render a still frame for each scene. "
+                        "You can re-render any single scene without redoing the rest.")
             with gr.Row(elem_classes="panel-box"):
                 with gr.Column(scale=1):
                     # --- Image model selection ---
@@ -274,24 +280,26 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
                     ]
                     font_style_choice = gr.Dropdown(choices=font_choices, value="chunky_display", label="Typography Overlay Style")
                     
-                    btn_generate_storyboard = gr.Button("🎨 Render Storyboard Matrix", variant="primary")
-                    
+                    btn_generate_storyboard = gr.Button("🎨 Render Storyboard", variant="primary")
+
                     gr.Markdown("---")
-                    gr.Markdown("### 🔬 Surgical Override")
-                    scene_num_input = gr.Number(label="Target Scene Number", precision=0, value=1)
-                    btn_regen_single = gr.Button("Re-Render Targeted Frame", variant="secondary")
-                    
+                    gr.Markdown("### 🔁 Re-render one scene")
+                    scene_num_input = gr.Number(label="Scene number", precision=0, value=1)
+                    btn_regen_single = gr.Button("Re-render this scene", variant="secondary")
+
                 with gr.Column(scale=3):
-                    storyboard_gallery = gr.Gallery(label="Composited Storyboard", columns=3, height=600)
+                    storyboard_gallery = gr.Gallery(label="Storyboard", columns=3, height=600)
                     
-        with gr.TabItem("3. Final Render"):
+        with gr.TabItem("3 · Final Render"):
+            gr.Markdown("Animate the storyboard into the final video. If a scene fails, fix and re-render "
+                        "just that one below — the others are kept.")
             with gr.Row(elem_classes="panel-box"):
                 with gr.Column(scale=1):
                     model_choice = gr.Dropdown(choices=list(MODELS.keys()), value="gemini-omni-flash", label="Animation Engine")
                     resolution_choice = gr.Dropdown(choices=["480p", "720p"], value="720p", label="Resolution")
-                    final_instructions = gr.Textbox(label="Global Override Instructions", placeholder="e.g. Keep lighting cinematic, end with logo fade.", lines=3)
+                    final_instructions = gr.Textbox(label="Global Override Instructions", placeholder="E.g. Keep lighting cinematic, end with logo fade.", lines=3)
                     btn_generate_final = gr.Button("🎬 Render Final Commercial", variant="primary")
-                    cost_output = gr.Textbox(label="Compute Cost & Render Status", lines=6, interactive=False)
+                    cost_output = gr.Textbox(label="Render Status & Cost", lines=6, interactive=False)
 
                     gr.Markdown("---")
                     gr.Markdown("### 🩹 Segment Recovery")
