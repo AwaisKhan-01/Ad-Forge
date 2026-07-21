@@ -264,39 +264,43 @@ def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: 
     is_text_banned = not (has_explicit_text_request or has_spoken_voiceover)
 
     pre_mapped_text = raw_visual_text
-    # --- ASSET MAPPING ---
-    # The VLM is instructed to write #Asset<N> (0-indexed) and list N in
-    # assigned_assets. image_urls[0] is always the base keyframe, so the Kth
-    # attached asset becomes #image{K+1}. We drive the mapping from the array
-    # (the authoritative source) and normalize the text tag to whatever number
-    # the VLM actually wrote for that asset, so casing / off-by-one variants of
-    # #Asset all resolve to the correct #imageN instead of leaking through.
-    for raw_idx in assigned_indices:
+    # --- ASSET MAPPING (1-BASED, AUTHORITATIVE) ---
+    # Assets are numbered the way the user sees them in the UI: Asset 1 is the
+    # FIRST uploaded file. The VLM is instructed to use the same 1-based scheme,
+    # so "Asset N" always means asset_urls[N - 1]. No index guessing happens here:
+    # a previous revision treated N as a 0-based array index, which silently
+    # served the WRONG file whenever more than one asset was uploaded (Asset 1
+    # returned the second upload). Numbering is now consistent across the UI
+    # label, the VLM prompt, and this lookup.
+    #
+    # The tags actually written in the prompt text are the source of truth for
+    # WHICH assets this scene needs. assigned_assets is merged in as a fallback
+    # for when the VLM populates the array but forgets the inline tag.
+    tags_in_text = [int(n) for n in re.findall(r"(?i)#asset\s*(\d+)\b", raw_visual_text)]
+
+    normalized_indices = []
+    for raw_idx in list(tags_in_text) + list(assigned_indices):
         try:
             raw_idx = int(raw_idx)
         except (TypeError, ValueError):
             print(f"      [WARNING] Non-integer asset index {raw_idx!r}. Skipping.")
             continue
+        if raw_idx not in normalized_indices:
+            normalized_indices.append(raw_idx)
 
-        array_idx = raw_idx
+    for raw_idx in normalized_indices:
+        array_idx = raw_idx - 1  # Asset 1 -> asset_urls[0]
+
         if not (0 <= array_idx < len(asset_urls)):
-            # The model is told to 0-index but frequently 1-indexes ("Asset 1" for
-            # the first upload). If the index is exactly one past the end, treat it
-            # as the 0-indexed equivalent instead of dropping the asset entirely.
-            if raw_idx == len(asset_urls) and raw_idx > 0:
-                array_idx = raw_idx - 1
-                print(f"      [SYSTEM] Interpreting 1-indexed Asset {raw_idx} as asset[{array_idx}].")
-            else:
-                print(f"      [WARNING] Scene requested Asset {raw_idx}, "
-                      f"but only {len(asset_urls)} asset(s) exist. Skipping.")
-                continue
+            print(f"      [WARNING] Scene requested Asset {raw_idx}, but only "
+                  f"{len(asset_urls)} asset(s) were uploaded. Skipping.")
+            continue
 
         image_urls.append(asset_urls[array_idx])
         target_image_tag = f"#image{len(image_urls)}"
+        print(f"      [ASSET MAP] Asset {raw_idx} -> upload #{raw_idx} -> {target_image_tag}")
 
-        # Rewrite whichever tag number the VLM actually wrote for this asset —
-        # the raw index it listed in the array — case-insensitive and tolerant of
-        # an optional space (#Asset 0). This is the number in the prompt text.
+        # Rewrite the tag the VLM wrote (case-insensitive, tolerates "#Asset 1").
         pre_mapped_text = re.sub(rf"(?i)#asset\s*{raw_idx}\b", target_image_tag, pre_mapped_text)
 
     # Safety net: neutralize any orphan #Asset<N> tags the VLM emitted without a

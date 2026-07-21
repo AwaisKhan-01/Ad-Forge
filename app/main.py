@@ -38,25 +38,57 @@ def set_fal_key(api_key: str):
         raise gr.Error("Error: Missing API Key. Please paste your FAL API Key in the top header.")
     os.environ["FAL_KEY"] = api_key.strip()
 
+def _asset_manifest(uploaded_assets) -> str:
+    """Numbered inventory of uploads, 1-based to match the UI and the VLM prompt."""
+    if not uploaded_assets:
+        return ""
+    lines = []
+    for i, path in enumerate(uploaded_assets, start=1):
+        if path:
+            lines.append(f"Asset {i}: {os.path.basename(path)}")
+    return "\n".join(lines)
+
+def render_asset_list(uploaded_assets):
+    """Live 'Asset 1 — file.png' list shown under the upload box so the user knows
+    exactly which number to reference in the Creative Directive."""
+    manifest = _asset_manifest(uploaded_assets)
+    if not manifest:
+        return gr.update(value="_No assets uploaded yet. Upload files, then refer to them as **Asset 1**, **Asset 2**, … in your Creative Directive._", visible=True)
+    rows = "\n".join(
+        f"- **Asset {i}** — `{os.path.basename(p)}`"
+        for i, p in enumerate(uploaded_assets, start=1) if p
+    )
+    return gr.update(value=f"**Your assets** (refer to these numbers in the Creative Directive):\n\n{rows}", visible=True)
+
 def step1_download(url):
     local_path = download_video(url)
     return local_path, gr.update(interactive=True)
 
-def step2_extract_scenes(api_key, local_video_path, creative_directive, target_duration, production_type):
+def step2_extract_scenes(api_key, local_video_path, creative_directive, target_duration, production_type, uploaded_assets):
     set_fal_key(api_key)
     if not local_video_path:
         return "Error: Please download a video first."
     try:
         hosted_video_url = upload_video(local_video_path)
+        # Give the VLM the actual 1-based inventory of uploads alongside the user's
+        # description of them. Without the manifest the model has to guess how many
+        # assets exist and what numbering to use, which is what caused it to emit
+        # out-of-range / 0-based indices and swap the wrong asset into a scene.
+        manifest = _asset_manifest(uploaded_assets)
+        if manifest:
+            asset_instructions = (
+                f"The user uploaded {len([a for a in uploaded_assets if a])} asset(s), "
+                f"numbered starting at 1:\n{manifest}\n\n"
+                f"What the user says about them: {creative_directive or '(no description given)'}"
+            )
+        else:
+            asset_instructions = ""
         extracted_text = analyze_and_extract_scenes(
             video_url=hosted_video_url,
             target_duration=int(target_duration),
             creative_directive=creative_directive,
             production_type=production_type,
-            # The creative directive IS the asset instruction set (it describes what
-            # each uploaded asset is and how to swap it in). Feed it to both prompts
-            # so the VLM actually populates assigned_assets instead of leaving [] .
-            asset_instructions=creative_directive
+            asset_instructions=asset_instructions
         )
         return extracted_text
     except Exception as e:
@@ -224,6 +256,9 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
                 with gr.Column(scale=1, elem_classes="panel-box"):
                     gr.Markdown("### 🎨 Brand Assets & Directives")
                     uploaded_assets = gr.File(label="Brand Assets — faces, logos, UI screens", file_count="multiple", type="filepath", height=150)
+                    asset_list_display = gr.Markdown(
+                        value="_No assets uploaded yet. Upload files, then refer to them as **Asset 1**, **Asset 2**, … in your Creative Directive._"
+                    )
                     creative_directive = gr.Textbox(label="Creative Directive", placeholder="E.g. 'Asset 1 is my UI dashboard, Asset 2 my logo. Swap the original product for Asset 1.'", lines=4)
 
                     btn_extract = gr.Button("🧠 Analyze Strategy & Compute Pacing", variant="primary", interactive=False)
@@ -325,9 +360,17 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
         outputs=[preview_video, btn_extract]
     )
     
+    # Keep the numbered asset list in sync so the user always knows which upload
+    # is "Asset 1", "Asset 2", … before writing the Creative Directive.
+    uploaded_assets.change(
+        fn=render_asset_list,
+        inputs=[uploaded_assets],
+        outputs=[asset_list_display]
+    )
+
     btn_extract.click(
-        fn=step2_extract_scenes, 
-        inputs=[api_key_input, preview_video, creative_directive, duration_choice, production_type], 
+        fn=step2_extract_scenes,
+        inputs=[api_key_input, preview_video, creative_directive, duration_choice, production_type, uploaded_assets],
         outputs=[extracted_prompts]
     )
     
