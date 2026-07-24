@@ -251,8 +251,11 @@ def _to_kling_args(args: dict, production_type: str) -> dict:
     }
     if urls:
         out["start_image_url"] = urls[0]
-    if len(urls) > 1 and urls[1]:
-        out["end_image_url"] = urls[1]
+    # Only lock the end frame when an explicit end role was set (see
+    # _to_endframe_args for why image_urls[1] must not be used as a fallback).
+    end_frame = args.get("_end_frame")
+    if end_frame:
+        out["end_image_url"] = end_frame
     return out
 
 
@@ -277,8 +280,13 @@ def _to_endframe_args(args: dict, model: dict) -> dict:
         out["generate_audio"] = bool(model.get("generate_audio"))
     if urls:
         out["image_url"] = urls[0]
-    if len(urls) > 1 and urls[1]:
-        out["end_image_url"] = urls[1]
+    # The END frame comes from the explicit `_end_frame` role when the caller set
+    # one. Never fall back to image_urls[1]: in a hard-cut narrative scene that
+    # slot holds an IDENTITY reference (the PREVIOUS frame), and locking onto it
+    # would make the clip animate backwards into the previous shot.
+    end_frame = args.get("_end_frame")
+    if end_frame:
+        out["end_image_url"] = end_frame
     return out
 
 
@@ -290,10 +298,18 @@ def _process_single_video_segment(idx: int, scene: Dict, seg_duration: float, to
     # stripped); fall back to the raw VLM text only if the image stage was skipped.
     raw_v_desc = scene.get("visual_prompt_sterilized") or scene.get("visual_prompt", "")
 
-    # --- Bind role references cleanly using the required <IMAGE_REF_0> tag format ---
-    # Handle both the original #assetN tags and the #imageN tags the image stage
-    # rewrote them into, so neither leaks into the video prompt as literal text.
-    raw_v_desc = re.sub(r"(?i)\s*\(?#(?:asset|image)\s*\d+\)?", " <IMAGE_REF_0> ", raw_v_desc)
+    # --- Bind image references using the convention THIS model understands ---
+    # Gemini Omni is the only engine that resolves <IMAGE_REF_n> tags. Every other
+    # engine treats them as meaningless literal text, so they must keep the plain
+    # #imageN form (Kling / Wan additionally address frames by role, handled below).
+    # Normalize #assetN -> #imageN first so only one convention reaches the model.
+    raw_v_desc = re.sub(r"(?i)\s*\(?#asset\s*(\d+)\)?", r" #image\1", raw_v_desc)
+    if model.get("input_type") == "images":       # Gemini Omni
+        raw_v_desc = re.sub(r"(?i)\s*\(?#image\s*\d+\)?", " <IMAGE_REF_0> ", raw_v_desc)
+    elif model.get("input_type") in ("kling", "endframe"):
+        # Kling / Wan address frames by ROLE, not by index. Map any leftover
+        # #imageN onto the start frame so the reference is unambiguous.
+        raw_v_desc = re.sub(r"(?i)\s*\(?#image\s*\d+\)?", " the start frame ", raw_v_desc)
     
     v_desc = sanitize_video_prompt(raw_v_desc)
     # Camera motion gets a LIGHT clean only. Running the full sanitizer here used
@@ -399,7 +415,9 @@ def _process_single_video_segment(idx: int, scene: Dict, seg_duration: float, to
     #     the subject/wardrobe/lighting/world stay consistent across the cut.
     if not mg and img_url and prev_frame_url and idx > 0:
         if transition == "continuous":
+            # Ordered start -> end: begin on the previous frame, land on this one.
             args["image_urls"] = [prev_frame_url, img_url]
+            args["_end_frame"] = img_url        # explicit role for end-frame models
             isolated_prompt += (
                 " CONTINUOUS TAKE: this is the SAME unbroken shot as the previous clip — "
                 "the camera never cut. Begin exactly on the first (previous) frame and "
@@ -407,7 +425,11 @@ def _process_single_video_segment(idx: int, scene: Dict, seg_duration: float, to
                 "keeping the same camera, subject, wardrobe and lighting. No cut, no jump."
             )
         else:
+            # The second URL here is an IDENTITY REFERENCE, not an end frame. Mark it
+            # so end-frame models (Kling/Wan) do NOT lock onto it — locking would
+            # force the clip to animate BACKWARDS into the previous shot.
             args["image_urls"] = [img_url, prev_frame_url]
+            args["_end_frame"] = None           # no end lock for a hard cut
             isolated_prompt += (
                 " SHOT IDENTITY: this is a NEW shot (a clean cut from the previous one). "
                 "Render this scene's composition, but keep the SAME subject, wardrobe, "
@@ -420,6 +442,7 @@ def _process_single_video_segment(idx: int, scene: Dict, seg_duration: float, to
     # frame and the NEXT scene's frame so motion flows across the cut.
     if mg and next_frame_url and img_url:
         args["image_urls"] = [img_url, next_frame_url]
+        args["_end_frame"] = next_frame_url   # true end lock: land on the next scene
         if model.get("input_type") == "endframe":
             # HARD END-FRAME LOCK (Kling O3 / Wan 2.7). The model is FORCED to end
             # exactly on the next frame, so clip N's final frame IS clip N+1's
@@ -441,9 +464,11 @@ def _process_single_video_segment(idx: int, scene: Dict, seg_duration: float, to
             # Gemini). We can't force the last frame, so aim toward the next
             # composition best-effort; the stitcher hard-cuts at the join.
             isolated_prompt += (
-                " SHOT STRUCTURE: OPEN on the first image and for ~80% of the clip"
-                " perform THIS scene's animation (kinetic type, element reveals), then"
-                " in the last ~20% begin moving toward the second image's composition."
+                " SHOT STRUCTURE: OPEN on THIS scene's own frame (the starting"
+                " composition) and for ~80% of the clip perform THIS scene's animation"
+                " (kinetic type, element reveals), then in the last ~20% begin moving"
+                " toward the FOLLOWING scene's composition. Direction of travel is"
+                " forward: start here, head toward the next — never the reverse."
             )
         args["prompt"] = isolated_prompt.strip()
 
@@ -460,6 +485,11 @@ def _process_single_video_segment(idx: int, scene: Dict, seg_duration: float, to
         # Wan 2.7 accepts a resolution; pass it when the model declares support.
         if model.get("resolutions"):
             args["resolution"] = resolution if resolution in model["resolutions"] else model["resolutions"][0]
+
+    # `_end_frame` is an INTERNAL role marker, never part of any model's contract.
+    # The adapters above rebuild args from scratch, so this only matters for the
+    # models that send `args` as-is (Seedance / Gemini).
+    args.pop("_end_frame", None)
 
     print(f"\n      [DISPATCHING] Scene {idx+1}/{total_scenes} -> {safe_integer_duration}s requested")
     # Log the frame chain explicitly: with an end-frame lock, scene N's END must
