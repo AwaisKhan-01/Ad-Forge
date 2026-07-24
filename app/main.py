@@ -257,9 +257,10 @@ def load_segment_inputs(segments_state, scene_number):
               f"**Status:** `{seg.get('status', 'n/a')}`"]
     if seg.get("error"):
         header.append(f"**⚠ Error:** {seg['error']}")
-    img = args.get("image_url", "") or (args.get("image_urls") or [""])[0]
+    img = (args.get("image_url", "") or args.get("start_image_url", "")
+           or (args.get("image_urls") or [""])[0])
     return (args.get("prompt", ""), img,
-            _payload_summary(args, ("prompt", "image_url", "image_urls"), header))
+            _payload_summary(args, ("prompt", "image_url", "image_urls", "start_image_url"), header))
 
 def _format_cost(tracker, segments=None):
     cost = tracker.total()

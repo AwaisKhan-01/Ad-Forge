@@ -3,6 +3,9 @@
 SEEDANCE_FAST_720P_PER_SEC = 0.2419
 SEEDANCE_VIDEO_INPUT_MULTIPLIER = 0.6 
 
+# CONFIRMED from fal.ai pricing (Kling v3 Pro image-to-video)
+KLING_V3_PRO_AUDIO_ON_PER_SEC = 0.168
+
 # ESTIMATED
 OMNI_PER_SEC_ESTIMATE = 0.10
 NEMOTRON_ANALYSIS_ESTIMATE = 0.02
@@ -16,6 +19,8 @@ def estimate_segment_cost(model_id: str, duration: int, resolution: str = "720p"
         return duration * rate * SEEDANCE_VIDEO_INPUT_MULTIPLIER
     elif model_id == "gemini-omni-flash":
         return duration * OMNI_PER_SEC_ESTIMATE
+    elif model_id == "kling-v3-pro":
+        return duration * KLING_V3_PRO_AUDIO_ON_PER_SEC
     return 0.0
 
 class BudgetExceeded(Exception):

@@ -191,8 +191,31 @@ def _download_result(url: str) -> str:
     except Exception as e:
         raise RuntimeError(f"Failed to download video chunk: {e}")
 
-def _process_single_video_segment(idx: int, scene: Dict, seg_duration: float, total_scenes: int, 
-                                  final_instructions: str, model: dict, aspect_ratio: str, 
+def _to_kling_args(args: dict, production_type: str) -> dict:
+    """Translate our internal video payload to the Kling v3 Pro contract.
+
+    Internal payload uses `image_url` / `image_urls` and an int `duration`.
+    Kling wants `start_image_url` (+ optional `end_image_url`), a STRING duration,
+    and generates audio natively (no aspect_ratio param). The continuity logic
+    already packs `image_urls` as [start, end] (or [current, next] for motion
+    graphics), so the first element is the start frame and the second, if any,
+    is the target/end frame — which maps cleanly onto start/end here.
+    """
+    urls = args.get("image_urls") or ([args["image_url"]] if args.get("image_url") else [])
+    out = {
+        "prompt": args.get("prompt", ""),
+        "duration": str(int(args.get("duration", 5))),   # Kling expects a string enum
+        "generate_audio": True,
+    }
+    if urls:
+        out["start_image_url"] = urls[0]
+    if len(urls) > 1 and urls[1]:
+        out["end_image_url"] = urls[1]
+    return out
+
+
+def _process_single_video_segment(idx: int, scene: Dict, seg_duration: float, total_scenes: int,
+                                  final_instructions: str, model: dict, aspect_ratio: str,
                                   resolution: str, production_type: str, next_frame_url: str = "",
                                   prev_frame_url: str = "") -> Dict:
     # Prefer the cleaned description frame_designer produced (meta/sequence text
@@ -354,9 +377,14 @@ def _process_single_video_segment(idx: int, scene: Dict, seg_duration: float, to
         )
         args["prompt"] = isolated_prompt.strip()
 
-    if model.get("input_type") == "video": 
+    if model.get("input_type") == "video":
         args["resolution"] = resolution
-    
+
+    # Kling v3 Pro speaks a different dialect: start/end frames, string duration,
+    # native audio, no aspect_ratio. Translate our internal payload to its contract.
+    if model.get("input_type") == "kling":
+        args = _to_kling_args(args, production_type)
+
     print(f"\n      [DISPATCHING] Scene {idx+1}/{total_scenes} -> {safe_integer_duration}s requested")
     print(f"      [PROMPT SENT]: {args['prompt']}")
 
@@ -523,8 +551,12 @@ def regenerate_single_segment(segments: List[Dict], scene_number, cost_tracker: 
     if prompt_override and prompt_override.strip():
         args["prompt"] = prompt_override.strip()
     if image_url_override and image_url_override.strip():
-        args["image_url"] = image_url_override.strip()
-        args["image_urls"] = [image_url_override.strip()]
+        new_img = image_url_override.strip()
+        if "start_image_url" in args:   # Kling-shaped payload
+            args["start_image_url"] = new_img
+        else:
+            args["image_url"] = new_img
+            args["image_urls"] = [new_img]
 
     print(f"\n[RE-RENDER] Scene {scene_number} with user-corrected args...")
     print(f"      [PROMPT SENT]: {args.get('prompt')}")
