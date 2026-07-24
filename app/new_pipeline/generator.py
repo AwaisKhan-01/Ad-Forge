@@ -233,20 +233,19 @@ def _download_result(url: str) -> str:
     except Exception as e:
         raise RuntimeError(f"Failed to download video chunk: {e}")
 
-def _to_kling_args(args: dict, production_type: str) -> dict:
+def _to_kling_args(args: dict, model: dict) -> dict:
     """Translate our internal video payload to the Kling v3 Pro contract.
 
     Internal payload uses `image_url` / `image_urls` and an int `duration`.
-    Kling wants `start_image_url` (+ optional `end_image_url`), a STRING duration,
-    and generates audio natively (no aspect_ratio param). The continuity logic
-    already packs `image_urls` as [start, end] (or [current, next] for motion
-    graphics), so the first element is the start frame and the second, if any,
-    is the target/end frame — which maps cleanly onto start/end here.
+    Kling v3 Pro wants `start_image_url` (NOTE: not `image_url` like O3/Wan),
+    an optional `end_image_url`, a STRING duration, and generates audio natively
+    (no aspect_ratio param). Duration type comes from the registry via
+    _format_duration so it can never drift from the endpoint's schema.
     """
     urls = args.get("image_urls") or ([args["image_url"]] if args.get("image_url") else [])
     out = {
         "prompt": args.get("prompt", ""),
-        "duration": str(int(args.get("duration", 5))),   # Kling expects a string enum
+        "duration": _format_duration(args.get("duration", 5), model),
         "generate_audio": True,
     }
     if urls:
@@ -259,20 +258,47 @@ def _to_kling_args(args: dict, production_type: str) -> dict:
     return out
 
 
+def _format_duration(seconds, model: dict):
+    """Serialize `duration` exactly the way THIS model's schema demands.
+
+    fal endpoints differ: Kling (v3 Pro / O3) declare duration as a STRING enum
+    ('3'..'15'); Wan 2.7 declares it as an INTEGER (2..15). Sending the wrong
+    type fails validation outright, so the type comes from the registry rather
+    than being assumed. The value is also clamped to the model's own duration
+    list, which may start lower/higher than our global chunk floor.
+    """
+    val = int(round(float(seconds)))
+    allowed = model.get("durations") or []
+    if allowed:
+        val = max(min(allowed), min(max(allowed), val))
+    return str(val) if model.get("duration_type", "string") == "string" else val
+
+
 def _to_endframe_args(args: dict, model: dict) -> dict:
     """Translate our internal payload to the end-frame-lock contract shared by
-    Kling O3 and Wan 2.7: `image_url` (start) + optional `end_image_url` (end),
-    string duration. When our continuity logic packed image_urls as [start, end],
-    the second URL becomes the HARD last frame — this is what removes the merge
-    cut in motion graphics (clip N ends exactly where clip N+1 begins).
+    Kling O3 and Wan 2.7: `image_url` (start) + optional `end_image_url` (end).
+    When our continuity logic packed image_urls as [start, end], the second URL
+    becomes the HARD last frame — this is what removes the merge cut in motion
+    graphics (clip N ends exactly where clip N+1 begins).
+
+    IMPORTANT: the two models disagree on the duration TYPE — Kling O3 wants a
+    string enum ('3'..'15'), Wan 2.7 wants an integer (2..15). The registry's
+    `duration_type` is authoritative; never assume one for both (sending '4' to
+    Wan is rejected with a literal_error).
 
     `generate_audio` is taken from the model registry (default off; the music-bed
     post stage supplies the soundtrack for motion graphics).
     """
     urls = args.get("image_urls") or ([args["image_url"]] if args.get("image_url") else [])
+    prompt = args.get("prompt", "")
+    # Kling O3 rejects prompts over 2500 chars; trim on a word boundary so a long
+    # motion-graphics prompt degrades instead of failing the whole segment.
+    max_len = model.get("max_prompt_chars")
+    if max_len and len(prompt) > max_len:
+        prompt = prompt[:max_len].rsplit(" ", 1)[0]
     out = {
-        "prompt": args.get("prompt", ""),
-        "duration": str(int(args.get("duration", 5))),   # these models expect a string enum
+        "prompt": prompt,
+        "duration": _format_duration(args.get("duration", 5), model),
     }
     # Kling O3 exposes generate_audio; Wan 2.7 ignores unknown keys harmlessly,
     # but only send it when the model declares support to keep payloads clean.
@@ -478,7 +504,7 @@ def _process_single_video_segment(idx: int, scene: Dict, seg_duration: float, to
     # Kling v3 Pro speaks a different dialect: start/end frames, string duration,
     # native audio, no aspect_ratio. Translate our internal payload to its contract.
     if model.get("input_type") == "kling":
-        args = _to_kling_args(args, production_type)
+        args = _to_kling_args(args, model)
     # End-frame-lock models (Kling O3 / Wan 2.7): image_url + end_image_url.
     elif model.get("input_type") == "endframe":
         args = _to_endframe_args(args, model)

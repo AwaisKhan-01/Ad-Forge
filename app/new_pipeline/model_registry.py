@@ -29,7 +29,8 @@ MODELS = {
         "label": "Kling v3 Pro (native audio)",
         "endpoint": "fal-ai/kling-video/v3/pro/image-to-video",
         "input_type": "kling",
-        "durations": list(range(3, 11)),   # model supports 3-15; we cap at 10 like the others
+        "durations": list(range(3, 11)),   # schema allows 3-15; we cap at 10
+        "duration_type": "string",         # schema: enum of strings '3'..'15'
         "aspect_ratios": ["auto"],         # determined by the start image
         "resolutions": None,               # 4K is a separate endpoint; not used here
         "max_images": 2,                   # start + end frame
@@ -43,22 +44,28 @@ MODELS = {
     #
     # Kling O3 Standard — cheapest current end-frame model. Audio off ($0.084/s)
     # because motion graphics gets its soundtrack from the music-bed post stage.
+    # duration_type is VERIFIED from each endpoint's OpenAPI schema. Kling declares
+    # duration as a STRING enum, Wan 2.7 as an INTEGER — sending the wrong type is
+    # rejected outright ("Input should be 2, 3, 4, ... or 15"). Never assume.
     "kling-o3": {
         "label": "Kling O3 (end-frame lock · cheap)",
         "endpoint": "fal-ai/kling-video/o3/standard/image-to-video",
         "input_type": "endframe",
-        "durations": list(range(3, 11)),   # model supports 3-15; capped at 10
+        "durations": list(range(3, 11)),   # schema allows 3-15; capped at 10
+        "duration_type": "string",         # schema: enum of strings '3'..'15'
         "aspect_ratios": ["auto"],         # inferred from the start image
         "resolutions": None,
         "max_images": 2,
         "generate_audio": False,           # off: cheaper, music added later
+        "max_prompt_chars": 2500,          # schema: prompt maxLength
     },
     # Wan 2.7 — also true first+last frame; different look. $0.10/s @ 720p.
     "wan-v2.7": {
         "label": "Wan 2.7 (end-frame lock)",
         "endpoint": "fal-ai/wan/v2.7/image-to-video",
         "input_type": "endframe",
-        "durations": list(range(3, 11)),
+        "durations": list(range(2, 11)),   # schema allows 2-15; capped at 10
+        "duration_type": "integer",        # schema: enum of ints 2..15
         "aspect_ratios": ["auto"],
         "resolutions": ["720p", "1080p"],
         "max_images": 2,
