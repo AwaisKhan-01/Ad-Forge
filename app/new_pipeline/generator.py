@@ -395,6 +395,10 @@ def _process_single_video_segment(idx: int, scene: Dict, seg_duration: float, to
                                   final_instructions: str, model: dict, aspect_ratio: str,
                                   resolution: str, production_type: str, next_frame_url: str = "",
                                   prev_frame_url: str = "") -> Dict:
+    # "Keep existing text" mode: the storyboard frames already carry their own
+    # typography, so the video stage must animate it rather than add new copy.
+    # The choice is stamped onto each frame by the storyboard step.
+    keep_existing_text = (scene.get("font_style") == "KEEP_EXISTING_TEXT")
     # Prefer the cleaned description frame_designer produced (meta/sequence text
     # stripped); fall back to the raw VLM text only if the image stage was skipped.
     raw_v_desc = scene.get("visual_prompt_sterilized") or scene.get("visual_prompt", "")
@@ -483,7 +487,17 @@ def _process_single_video_segment(idx: int, scene: Dict, seg_duration: float, to
             "— never a static or near-still shot. Precise, deliberate easing. "
             "No talking, no lip-sync, no human speech."
         )
-        if copy_text:
+        if keep_existing_text:
+            # The frame already carries its own designed typography. Animate THAT
+            # type rather than generating new copy on top of it.
+            isolated_prompt += (
+                " TYPOGRAPHY: the frame already contains its own finished lettering. "
+                "Animate the EXISTING text as-is — move, reveal, mask or scale it, "
+                "keeping the same wording, font, colour and spelling. Do NOT add any "
+                "new text, captions or labels, and do NOT restyle or re-render the "
+                "existing type."
+            )
+        elif copy_text:
             isolated_prompt += (
                 f' Animated typography reads exactly "{copy_text}" — kinetic type that '
                 f'stays perfectly legible and correctly spelled, never warped or distorted.'

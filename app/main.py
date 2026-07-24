@@ -124,6 +124,7 @@ def step3_generate_storyboard(api_key, edited_prompts, uploaded_assets, local_vi
         # (step 4) can price the images with the actual model/size/quality used.
         for frame in storyboard_data:
             frame["image_model"] = image_model
+            frame["font_style"] = font_style   # video stage needs it for text handling
             frame["image_size"] = image_size
             frame["image_quality"] = image_quality
 
@@ -599,7 +600,8 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
                         outputs=[image_size_choice, image_quality_choice])
 
                     font_choices = [
-                        ("No Text", "NO_TEXT"),
+                        ("Keep Existing Text (use the reference's own fonts)", "KEEP_EXISTING_TEXT"),
+                        ("No Text (remove all text, including the original)", "NO_TEXT"),
                         ("Chunky Display (Bold & Playful)", "chunky_display"),
                         ("Elegant Script Mix (High Fashion)", "elegant_script_mix"),
                         ("Streetwear Graffiti (Grungy Urban)", "streetwear_graffiti"),
@@ -609,7 +611,11 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
                         ("Liquid Cursive (Fluid Abstract)", "liquid_cursive"),
                         ("Raw Expressionist (Jagged Papercut)", "raw_expressionist")
                     ]
-                    font_style_choice = gr.Dropdown(choices=font_choices, value="chunky_display", label="Typography Overlay Style")
+                    font_style_choice = gr.Dropdown(
+                        choices=font_choices, value="chunky_display", label="Typography Overlay Style",
+                        info="Motion graphics: pick 'Keep Existing Text' so the reference's own "
+                             "fonts survive and no extra type is stacked on top. 'No Text' erases "
+                             "the original lettering too.")
 
                     qa_toggle = gr.Checkbox(
                         value=True, label="🔎 Keyframe QA (flag prompt/frame mismatches)",

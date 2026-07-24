@@ -70,7 +70,16 @@ def image_price(model_key: str, image_size: str = "", quality: str = "") -> floa
 # TYPOGRAPHY PRESET REGISTRY
 # ==========================================
 TYPOGRAPHY_PRESETS = {
+    # Erase ALL text, including any already present in the reference/assets.
     "NO_TEXT": "no text, no typography, no letters, no logos, no branding, clean composition",
+    # Keep the text that is ALREADY in the image and add none of our own. This is
+    # the right choice for motion graphics, where the reference frames and brand
+    # assets already carry their own designed typography: NO_TEXT would wipe that
+    # out, while a font preset would stack a second layer of type on top of it.
+    "KEEP_EXISTING_TEXT": ("preserve all existing text, typography, logos and lettering exactly as they "
+                           "already appear in the source image — same wording, same font, same size, "
+                           "same position, same colour; do not restyle, re-render, translate, move or "
+                           "duplicate them. Do NOT add any new text, captions, labels or watermarks"),
     "chunky_display": "bold chunky irregular hand-drawn display typeface, interlocking blocky letters, playful raw graphic design layout, thick solid weights",
     "elegant_script_mix": "high-contrast elegant spencerian script typography mixed with clean bold geometric sans-serif accent lettering, high-fashion luxury editorial text layout",
     "streetwear_graffiti": "grungy streetwear stenciled typography text graphic, distressed spray-paint texture, urban stencil art style, sharp aggressive letter angles, clean crisp monochrome edges",
@@ -322,7 +331,13 @@ def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: 
     # The user's typography choice is authoritative: picking "No Text" bans text
     # even for scenes that have dialogue. Previously this was ignored entirely.
     user_wants_no_text = (selected_font_style == "NO_TEXT")
-    is_text_banned = user_wants_no_text or not (has_explicit_text_request or has_spoken_voiceover)
+    # "Keep existing text" is a THIRD state, distinct from both add-typography and
+    # ban-all-text: the source image's own lettering must survive untouched while
+    # we add none of our own. It must NOT fall through to is_text_banned, whose
+    # prompt ("no text, no letters, no logos") would erase the original design.
+    keep_existing_text = (selected_font_style == "KEEP_EXISTING_TEXT")
+    is_text_banned = (not keep_existing_text) and (
+        user_wants_no_text or not (has_explicit_text_request or has_spoken_voiceover))
 
     pre_mapped_text = raw_visual_text
     # --- ASSET MAPPING (1-BASED, AUTHORITATIVE) ---
@@ -407,7 +422,11 @@ def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: 
             f"{sterilized_phrase}"
         )
 
-    if not is_text_banned:
+    if keep_existing_text:
+        # THIRD STATE: neither add nor remove. The source already has designed
+        # typography (common in motion graphics) — carry it through untouched.
+        design_prompt += f", {TYPOGRAPHY_PRESETS['KEEP_EXISTING_TEXT']}"
+    elif not is_text_banned:
         font_prompt_modifier = TYPOGRAPHY_PRESETS.get(selected_font_style, TYPOGRAPHY_PRESETS["chunky_display"])
         # Only ever render actual SPOKEN words as typography — never a music cue.
         text_content = _speech_only(scene_dialogue) if has_spoken_voiceover else ""
@@ -449,6 +468,11 @@ def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: 
         # composition, so it needs far more freedom than a live-action edit where
         # the frame is being preserved.
         edit_strength = 0.85 if motion_graphic else (0.55 if has_assets else 0.25)
+        if keep_existing_text:
+            # A high strength repaints the frame and mangles the very lettering we
+            # are trying to preserve, so cap it. Existing type survives only if the
+            # edit stays light.
+            edit_strength = min(edit_strength, 0.35)
         args = {
             "prompt": design_prompt,
             "image_urls": image_urls,
@@ -456,7 +480,13 @@ def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: 
             "strength": edit_strength,
             "negative_prompt": ("text, letters, words, typography, captions, subtitles, watermark, "
                                 if is_text_banned else "") +
-                               "ugly, deformed, blurry text, double letters, messy layout, generic sans-serif, standard subtitle boxes, hallucinated faces, overprocessed, deep-fried AI, cluttered, noisy"
+                               # Never ask to avoid "blurry/double" text when we are
+                               # preserving type — it pushes the model to redraw it.
+                               ("added text, new captions, extra lettering, watermark, restyled typography, "
+                                if keep_existing_text else "") +
+                               ("ugly, deformed, blurry text, double letters, messy layout, generic sans-serif, standard subtitle boxes, "
+                                if not keep_existing_text else "ugly, deformed, messy layout, ") +
+                               "hallucinated faces, overprocessed, deep-fried AI, cluttered, noisy"
         }
         payload_note = f"{model_cfg['label']} | aspect={aspect_ratio} strength={edit_strength}"
 
