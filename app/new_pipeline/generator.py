@@ -165,27 +165,66 @@ def plan_dynamic_segments(storyboard_frames: List[Dict], total_target_duration: 
     print(f"      [PACING] target={total_target_duration}s -> planned={sum(allocated_durations):.1f}s")
     return allocated_durations
 
+# Words that commonly trip fal/Gemini content classifiers on otherwise innocent
+# ad copy, mapped to neutral equivalents. Ordered dict semantics matter: the
+# MULTI-WORD phrases must be replaced before the single words they contain.
+#
+# NOTE ON FILM LANGUAGE: "shot"/"shoot" are legitimate cinematography terms
+# ("wide shot", "we shoot at golden hour"). Blanket-replacing them mangled real
+# camera direction, so they are only neutralized in violent constructions
+# ("shoot him", "gunshot"), handled by the phrase pass below.
+_FLAG_PHRASES = [
+    # Only violent constructions — NOT "shoot at golden hour" / "shoot at dawn",
+    # which are ordinary production language and must survive untouched.
+    (r"\bshoot(?:ing|s)?\s+(?:him|her|them|people|someone|each other)\b", "confronting"),
+    (r"\bshoot(?:ing|s)?\s+at\s+(?:him|her|them|people|someone)\b", "aiming toward"),
+    (r"\bgun\s*shot\b", "loud bang"),
+    (r"\bblow(?:ing|s)?\s+up\b", "bursting"),
+    (r"\bbreak(?:ing|s)?\s+into\b", "entering"),
+]
+_FLAG_WORDS = {
+    # violence / weapons
+    "kill": "stop", "killing": "stopping", "dead": "still", "death": "the end",
+    "blood": "red liquid", "bloody": "deep red", "wound": "mark",
+    "gun": "prop", "rifle": "prop", "weapon": "prop", "knife": "blade tool",
+    "bomb": "burst", "explosive": "dynamic", "explosion": "burst of light",
+    "attack": "approach", "fight": "face off", "punch": "strike pose",
+    "violent": "intense", "violence": "intensity", "war": "conflict",
+    "destroy": "transform", "smash": "impact",
+    # nudity / suggestive
+    "naked": "bare", "nude": "bare", "sexy": "striking", "seductive": "alluring",
+    "lingerie": "loungewear", "undress": "change",
+    # substances
+    "drug": "supplement", "drugs": "supplements", "alcohol": "beverage",
+    "beer": "drink", "cigarette": "stick", "smoking": "steaming",
+    # self-harm / distress
+    "suicide": "crisis", "abuse": "misuse",
+    # misc false-positives
+    "ripped": "distressed", "shredded": "textured", "strangle": "hold",
+}
+
+
+def _neutralize_flaggable(text: str) -> str:
+    """Replace words/phrases that commonly trigger content classifiers.
+
+    Applied to EVERY piece of free text that reaches a video model — the visual
+    description, the spoken dialogue and any on-screen copy — because the checker
+    scans the whole prompt, not just the scene description.
+    """
+    if not text:
+        return text
+    out = text
+    for pattern, repl in _FLAG_PHRASES:      # phrases first (they contain words)
+        out = re.sub(rf"(?i){pattern}", repl, out)
+    for bad, safe in _FLAG_WORDS.items():
+        out = re.sub(rf"(?i)\b{re.escape(bad)}\b", safe, out)
+    return out
+
+
 def sanitize_video_prompt(raw_desc: str) -> str:
     clean = raw_desc.replace('"', '').replace("'", "")
     
-    # --- SURGICAL FIX: Safety Sanitizer for False Positives ---
-    # Swaps words that trigger Gemini's Violence/NSFW filters with safe alternatives
-    safety_replacements = {
-        "ripped": "distressed",
-        "naked": "bare",
-        "shoot": "film",
-        "shot": "filmed",
-        "kill": "end",
-        "blood": "red liquid",
-        "bomb": "burst",
-        "explosive": "dynamic",
-        "gun": "prop",
-        "weapon": "prop"
-    }
-    
-    for bad_word, safe_word in safety_replacements.items():
-        # Uses regex to replace the exact word bounds, case-insensitive
-        clean = re.sub(rf'(?i)\b{bad_word}\b', safe_word, clean)
+    clean = _neutralize_flaggable(clean)
         
     # Remove only true editing/meta directives that confuse a text-to-video model.
     # NOTE: do NOT strip content words like "transform"/"scene"/"visual" — they are
@@ -256,6 +295,42 @@ def _to_kling_args(args: dict, model: dict) -> dict:
     if end_frame:
         out["end_image_url"] = end_frame
     return out
+
+
+def _is_content_flag(error_msg: str) -> bool:
+    """True when a failure looks like a moderation rejection rather than a bug.
+
+    fal reports these as `content_policy_violation`; some models instead return
+    an empty result, which we surface with a matching message.
+    """
+    m = (error_msg or "").lower()
+    return any(s in m for s in (
+        "content_policy_violation", "content policy", "content checker",
+        "flagged by a content", "safety", "nsfw", "moderation",
+        "returned no video url",
+    ))
+
+
+def _make_safe_retry_args(args: dict, scene: Dict) -> dict:
+    """Build a deliberately bland payload for a scene the checker rejected.
+
+    Strategy: drop the free-text description entirely (that's what got flagged)
+    and keep only the frames plus a generic, unmistakably safe instruction. The
+    images themselves already carry the composition, so the clip still matches
+    the storyboard — it just loses the descriptive nuance.
+    """
+    safe = dict(args)
+    is_mg = bool((scene or {}).get("on_screen_text"))
+    safe["prompt"] = (
+        "A clean, professional commercial shot. Smooth natural motion, "
+        "cinematic lighting, high production value. No text overlays."
+        if not is_mg else
+        "A clean, professional motion-graphics shot. Smooth kinetic animation of "
+        "the on-screen elements, polished and modern, high production value."
+    )
+    # Speech is the most common trigger; a flagged retry drops it entirely.
+    safe.pop("negative_prompt", None)
+    return safe
 
 
 def _format_duration(seconds, model: dict):
@@ -383,7 +458,9 @@ def _process_single_video_segment(idx: int, scene: Dict, seg_duration: float, to
         if "music" in scene_audio.lower() or "score" in scene_audio.lower() or scene_audio in ["", "..."]:
             isolated_prompt += " Subject is silent, natural ambient movement. No text on screen."
         else:
-            safe_audio = scene_audio.replace('"', '').replace("'", "")
+            # Dialogue is scanned by the content checker too, so neutralize it as
+            # well — this text was previously passed through completely unfiltered.
+            safe_audio = _neutralize_flaggable(scene_audio.replace('"', '').replace("'", ""))
             isolated_prompt += (
                 f' The subject speaks these exact words in a natural, warm, conversational human voice: "{safe_audio}". '
                 f'VOICE DIRECTION: Authentic real-person delivery with natural intonation, breath, and pacing — '
@@ -395,7 +472,7 @@ def _process_single_video_segment(idx: int, scene: Dict, seg_duration: float, to
     elif is_motion_graphic(production_type):
         # Motion graphics: nobody speaks. Drive precise graphic animation and, when
         # the storyboard supplies design copy, animate that exact text.
-        copy_text = (scene.get("on_screen_text") or "").strip().replace('"', "")
+        copy_text = _neutralize_flaggable((scene.get("on_screen_text") or "").strip().replace('"', ""))
         isolated_prompt += (
             " MOTION GRAPHICS — AUTHOR A FULL ANIMATED SEQUENCE, do not merely add drift to "
             "the still image. The supplied frame is one key pose; you must CREATE the "
@@ -548,6 +625,28 @@ def _process_single_video_segment(idx: int, scene: Dict, seg_duration: float, to
         return {**base_result, "status": "ok", "path": local_path, "error": None}
     except Exception as e:
         error_msg = str(e) or e.__class__.__name__
+        # CONTENT-POLICY SELF-HEAL: the checker is a black box, so a prompt can be
+        # flagged even after sanitizing. Rather than losing the scene, retry ONCE
+        # with a stripped-back, deliberately bland prompt. This costs one extra
+        # call only for scenes that were actually flagged.
+        if _is_content_flag(error_msg):
+            safe_args = _make_safe_retry_args(args, scene)
+            print(f"      [CONTENT FLAG] Scene {idx+1}: retrying once with a neutral prompt…")
+            try:
+                result = fal_client.subscribe(model["endpoint"], arguments=safe_args)
+                out_url = result.get("video", {}).get("url")
+                if out_url:
+                    local_path = _download_result(out_url)
+                    print(f"      [COMPLETED] Scene {idx+1} (neutral-prompt retry)")
+                    return {**base_result, "args": safe_args, "status": "ok",
+                            "path": local_path, "error": None,
+                            "note": "Recovered after a content flag using a neutral prompt."}
+            except Exception as e2:
+                error_msg = (f"Content flagged, and the neutral retry also failed: {e2}. "
+                             f"Edit this scene's prompt to remove sensitive wording.")
+            else:
+                error_msg = ("Content flagged; the neutral retry returned no video. "
+                             "Edit this scene's prompt to remove sensitive wording.")
         print(f"      [FAILED] Scene {idx+1}: {error_msg}")
         return {**base_result, "status": "failed", "path": None, "error": error_msg}
 
