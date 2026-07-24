@@ -462,6 +462,11 @@ def _process_single_video_segment(idx: int, scene: Dict, seg_duration: float, to
             args["resolution"] = resolution if resolution in model["resolutions"] else model["resolutions"][0]
 
     print(f"\n      [DISPATCHING] Scene {idx+1}/{total_scenes} -> {safe_integer_duration}s requested")
+    # Log the frame chain explicitly: with an end-frame lock, scene N's END must
+    # equal scene N+1's START. Printing both makes a mis-ordered chain obvious.
+    if args.get("end_image_url") or args.get("image_url") or args.get("start_image_url"):
+        print(f"      [FRAMES] start={args.get('image_url') or args.get('start_image_url') or '—'}")
+        print(f"      [FRAMES]   end={args.get('end_image_url') or '— (free ending)'}")
     print(f"      [PROMPT SENT]: {args['prompt']}")
 
     # NOTE: this function NEVER raises. A single chunk failing must not tear down

@@ -283,8 +283,13 @@ def load_segment_inputs(segments_state, scene_number):
         header.append(f"**⚠ Error:** {seg['error']}")
     img = (args.get("image_url", "") or args.get("start_image_url", "")
            or (args.get("image_urls") or [""])[0])
+    # Make the frame roles explicit so start/end can't be mistaken for each other.
+    end_img = args.get("end_image_url", "")
+    header.append(f"**▶ START frame (first frame of this clip):** {img or '—'}")
+    header.append(f"**⏹ END frame (locked last frame):** {end_img or '— free ending (no lock)'}")
     return (args.get("prompt", ""), img,
-            _payload_summary(args, ("prompt", "image_url", "image_urls", "start_image_url"), header))
+            _payload_summary(args, ("prompt", "image_url", "image_urls",
+                                    "start_image_url", "end_image_url"), header))
 
 def _frames_to_gallery(storyboard_frames):
     """Rebuild the storyboard gallery (image, caption) list from frame state,
