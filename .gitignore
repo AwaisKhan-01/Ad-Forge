@@ -20,3 +20,6 @@ outputs/
 downloads/
 segments/
 frames/
+
+# Local session autosave (storyboard restore across restarts)
+sessions/

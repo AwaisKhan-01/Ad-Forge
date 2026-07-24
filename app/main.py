@@ -16,11 +16,12 @@ from app.new_pipeline.generator import (
     generate_final_video, regenerate_single_segment,
     build_timeline_preview, clamp_chunk, MODEL_MIN_CHUNK, MODEL_MAX_CHUNK,
 )
+from app.new_pipeline import session_store
 
 # Fixed pool of per-scene duration editors. A ≤60s ad never needs more scenes
 # than this; unused rows stay hidden. Editing a variable number of components in
 # Gradio requires a fixed pool made visible up to the real scene count.
-MAX_TIMELINE_ROWS = 12
+MAX_TIMELINE_ROWS = 30
 
 # --- SLEEK ENTERPRISE CSS ---
 CUSTOM_CSS = """
@@ -146,6 +147,8 @@ def step3_generate_storyboard(api_key, edited_prompts, uploaded_assets, local_vi
                   "\n".join(f"• Scene {n}: {r}" for n, r in mismatches)
             gr.Warning(msg)
 
+        # Autosave so a server restart doesn't lose this (expensive) storyboard.
+        session_store.save_session(storyboard_frames=storyboard_data)
         return gallery_format, storyboard_data
     except Exception as e:
         print(f"Storyboard compilation error: {str(e)}")
@@ -197,13 +200,9 @@ def step3_regenerate_single(api_key, edited_prompts, scene_num_to_regen, uploade
                 current_storyboard_state[idx] = updated_scene
                 break
                 
-        # --- SURGICAL FIX: Update Gallery Captions for Split Schema ---
-        gallery_format = []
-        for frame in current_storyboard_state:
-            if frame.get("generated_image_url"):
-                display_text = frame.get('spoken_dialogue') or frame.get('sfx_music', '')
-                gallery_format.append((frame["generated_image_url"], f"Scene {frame['scene_number']}: {display_text}"))
-                
+        gallery_format = _frames_to_gallery(current_storyboard_state)
+        # Autosave the updated storyboard so the edit survives a restart.
+        session_store.save_session(storyboard_frames=current_storyboard_state)
         gr.Info(f"Scene {scene_num_to_regen} successfully updated!")
         return gallery_format, current_storyboard_state
     except Exception as e:
@@ -287,6 +286,36 @@ def load_segment_inputs(segments_state, scene_number):
     return (args.get("prompt", ""), img,
             _payload_summary(args, ("prompt", "image_url", "image_urls", "start_image_url"), header))
 
+def _frames_to_gallery(storyboard_frames):
+    """Rebuild the storyboard gallery (image, caption) list from frame state,
+    including the ⚠ keyframe-QA flag. Shared by generation and session restore."""
+    gallery = []
+    for frame in (storyboard_frames or []):
+        if frame.get("generated_image_url"):
+            display_text = frame.get('spoken_dialogue') or frame.get('sfx_music', '')
+            qa = frame.get("qa_keyframe") or {}
+            prefix = "⚠ " if qa.get("status") == "mismatch" else ""
+            gallery.append((frame["generated_image_url"],
+                            f"{prefix}Scene {frame['scene_number']}: {display_text}"))
+    return gallery
+
+
+def restore_session():
+    """On app load, repopulate the storyboard/segment state + gallery from the last
+    saved session so a server restart doesn't lose an expensive storyboard.
+    Returns (gallery, storyboard_state, segments_state, status_markdown)."""
+    data = session_store.load_session()
+    frames = data.get("storyboard_frames") or []
+    segments = data.get("video_segments") or []
+    if not frames:
+        return gr.update(), None, None, gr.update()
+    age = session_store.session_age_str()
+    note = (f"♻️ Restored previous session ({len(frames)} storyboard frames"
+            + (f", saved {age}" if age else "") + "). Your work was not lost.")
+    gr.Info(note)
+    return _frames_to_gallery(frames), frames, (segments or None), note
+
+
 def preview_timeline(storyboard_frames, target_duration):
     """Build the pre-generation timeline (free, no model calls) and lay it into the
     fixed pool of per-scene duration editors. Returns, in order:
@@ -365,18 +394,30 @@ def step4_generate_final(api_key, storyboard_frames, final_instructions, model_c
     if not storyboard_frames:
         return None, "Error: No storyboard frames found. Please complete Step 3.", None, gr.update()
 
-    # The user MUST preview the timeline first (block-until-valid). timeline_vals is
-    # the fixed pool of per-scene duration editors; take the first N for N scenes.
+    # Per-scene durations from the timeline editor pool (first N rows for N scenes).
+    # If the user reviewed/edited them we honor them; if not (all blank), we fall
+    # back to the automatic plan rather than blocking the render. Block ONLY when
+    # the user actually supplied an out-of-range value.
     n = len(storyboard_frames)
-    overrides = [v for v in timeline_vals[:n] if v is not None]
-    if len(overrides) != n or any(v in (None, "") for v in overrides):
-        gr.Warning("Preview the timeline first so each scene has a duration.")
-        return None, "⛔ Click 'Preview Timeline' and review durations before rendering.", None, gr.update()
-    if not _timeline_is_valid(overrides):
-        lo, hi = int(MODEL_MIN_CHUNK), int(MODEL_MAX_CHUNK)
-        gr.Warning(f"Every scene must be {lo}–{hi}s before rendering.")
-        return None, (f"⛔ Some scene durations are outside the model limit ({lo}–{hi}s). "
-                      f"Fix them in the timeline and try again."), None, gr.update()
+    raw_vals = list(timeline_vals[:n])
+    supplied = [v for v in raw_vals if v not in (None, "")]
+    overrides = None
+    if supplied:
+        # Some durations were provided. Require ALL n to be present and valid so we
+        # don't render a mix of edited + missing scenes.
+        if len(supplied) != n:
+            gr.Warning("Some scenes have no duration. Click 'Preview Timeline' to fill them all in.")
+            return None, "⛔ Preview the timeline so every scene has a duration, then render.", None, gr.update()
+        try:
+            overrides = [float(v) for v in supplied]
+        except (TypeError, ValueError):
+            gr.Warning("Durations must be numbers.")
+            return None, "⛔ One or more durations aren't valid numbers.", None, gr.update()
+        if not _timeline_is_valid(overrides):
+            lo, hi = int(MODEL_MIN_CHUNK), int(MODEL_MAX_CHUNK)
+            gr.Warning(f"Every scene must be {lo}–{hi}s before rendering.")
+            return None, (f"⛔ Some scene durations are outside the model limit ({lo}–{hi}s). "
+                          f"Fix them in the timeline and try again."), None, gr.update()
 
     tracker = CostTracker(max_budget_usd=max_budget)
     tracker.add_analysis_call()
@@ -412,6 +453,9 @@ def step4_generate_final(api_key, storyboard_frames, final_instructions, model_c
                 seg_choice = gr.update(value=int(failed[0]))
             except (TypeError, ValueError):
                 seg_choice = gr.update()
+        # Autosave storyboard + rendered segments so a restart keeps both.
+        session_store.save_session(storyboard_frames=storyboard_frames,
+                                   video_segments=result.get("segments"))
         return result["final_video_path"], report, result["segments"], seg_choice
     except BudgetExceeded as be:
         # Nothing was rendered — refused up-front. Images/analysis already billed.
@@ -452,6 +496,7 @@ def step4_rerender_segment(api_key, segments_state, scene_number, resolution, pr
             resolution=resolution, prompt_override=prompt_override, image_url_override=image_override
         )
         report = f"{result['status_report']}\n\n{_format_cost(tracker)}"
+        session_store.save_session(video_segments=result.get("segments"))
         return result["final_video_path"], report, result["segments"]
     except Exception as e:
         return None, f"Re-render Failed: {str(e)}", segments_state
@@ -469,7 +514,9 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
                 placeholder="Paste your fal_… key to authorize generation",
                 elem_classes="panel-box"
             )
-    
+        # Shown when a previous session (storyboard) is auto-restored after a restart.
+        restore_banner = gr.Markdown(value="", visible=True)
+
     state_storyboard_frames = gr.State()
     state_video_segments = gr.State()   # per-segment render state for chunk recovery
 
@@ -606,11 +653,13 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
                     btn_preview_timeline = gr.Button("📋 Preview Timeline", variant="secondary")
                     timeline_status = gr.Markdown(value="_Click 'Preview Timeline' to plan durations._")
                     # Fixed pool of per-scene duration editors; shown up to scene count.
+                    # Default value is None (blank) so "not previewed yet" is detectable
+                    # and never sends a stale 5 into the render.
                     timeline_labels, timeline_numbers, timeline_rows = [], [], []
                     for _i in range(MAX_TIMELINE_ROWS):
                         with gr.Row(visible=False) as _row:
                             _lbl = gr.Markdown(value="", elem_classes="timeline-label")
-                            _num = gr.Number(label="sec", value=5, precision=0,
+                            _num = gr.Number(label="sec", value=None, precision=0,
                                              minimum=int(MODEL_MIN_CHUNK), maximum=int(MODEL_MAX_CHUNK),
                                              scale=0)
                         timeline_rows.append(_row)
@@ -740,6 +789,14 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
         fn=step4_add_music,
         inputs=[final_video, music_upload, duck_toggle],
         outputs=[final_video, cost_output]
+    )
+
+    # On page load, restore the last saved session (storyboard + segments) so a
+    # server restart / code change never loses an expensive storyboard.
+    demo.load(
+        fn=restore_session,
+        inputs=None,
+        outputs=[storyboard_gallery, state_storyboard_frames, state_video_segments, restore_banner]
     )
 
 if __name__ == "__main__":
