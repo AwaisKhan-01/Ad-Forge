@@ -12,7 +12,15 @@ from app.new_pipeline.cost_tracker import CostTracker, BudgetExceeded
 
 from app.new_pipeline.analyzer import analyze_and_extract_scenes, is_motion_graphic
 from app.new_pipeline.frame_designer import generate_storyboard_frames, _process_single_scene, parse_extracted_scenes, IMAGE_MODELS, DEFAULT_IMAGE_MODEL
-from app.new_pipeline.generator import generate_final_video, regenerate_single_segment
+from app.new_pipeline.generator import (
+    generate_final_video, regenerate_single_segment,
+    build_timeline_preview, clamp_chunk, MODEL_MIN_CHUNK, MODEL_MAX_CHUNK,
+)
+
+# Fixed pool of per-scene duration editors. A ≤60s ad never needs more scenes
+# than this; unused rows stay hidden. Editing a variable number of components in
+# Gradio requires a fixed pool made visible up to the real scene count.
+MAX_TIMELINE_ROWS = 12
 
 # --- SLEEK ENTERPRISE CSS ---
 CUSTOM_CSS = """
@@ -279,6 +287,61 @@ def load_segment_inputs(segments_state, scene_number):
     return (args.get("prompt", ""), img,
             _payload_summary(args, ("prompt", "image_url", "image_urls", "start_image_url"), header))
 
+def preview_timeline(storyboard_frames, target_duration):
+    """Build the pre-generation timeline (free, no model calls) and lay it into the
+    fixed pool of per-scene duration editors. Returns, in order:
+      [status_markdown] + [row_visibility ...] + [row_label ...] + [row_value ...]
+    """
+    n_updates = lambda vis, lab, val: (vis + lab + val)
+    hidden_rows = [gr.update(visible=False)] * MAX_TIMELINE_ROWS
+    blank_labels = [gr.update()] * MAX_TIMELINE_ROWS
+    blank_vals = [gr.update()] * MAX_TIMELINE_ROWS
+
+    if not storyboard_frames:
+        gr.Warning("Render the storyboard first, then preview the timeline.")
+        return ["_No storyboard yet._", *n_updates(hidden_rows, blank_labels, blank_vals)]
+
+    preview = build_timeline_preview(storyboard_frames, int(target_duration))
+    rows = preview["rows"][:MAX_TIMELINE_ROWS]
+
+    vis, labels, vals = [], [], []
+    for i in range(MAX_TIMELINE_ROWS):
+        if i < len(rows):
+            r = rows[i]
+            vis.append(gr.update(visible=True))
+            labels.append(gr.update(value=f"**Scene {r['scene_number']}** · {r['dialogue_words']} words · "
+                                          f"_{r['prompt_snippet'] or '(no prompt)'}_"))
+            vals.append(gr.update(value=r["planned_duration"]))
+        else:
+            vis.append(gr.update(visible=False))
+            labels.append(gr.update())
+            vals.append(gr.update())
+
+    status = _timeline_status([r["planned_duration"] for r in rows], preview["target"], len(rows))
+    return [status, *n_updates(vis, labels, vals)]
+
+def _timeline_status(durations, target, n_scenes):
+    """Human-readable timeline summary + validity, shared by preview and live edits."""
+    lo, hi = int(MODEL_MIN_CHUNK), int(MODEL_MAX_CHUNK)
+    total = sum(clamp_chunk(d) for d in durations)
+    bad = [i + 1 for i, d in enumerate(durations) if not (lo <= round(d) <= hi)]
+    min_possible = n_scenes * lo
+    target_txt = f"target {target}s, " if target else ""
+    lines = [f"**Planned total: {total}s**  ({target_txt}{n_scenes} scenes)"]
+    if bad:
+        lines.append(f"⛔ Scenes {bad} are outside the model limit ({lo}–{hi}s each). "
+                     f"Fix them to enable rendering.")
+    if target and min_possible > target:
+        lines.append(f"⚠ With {n_scenes} scenes the shortest possible ad is {min_possible}s "
+                     f"(each chunk ≥{lo}s), so {target}s isn't reachable without fewer scenes.")
+    if not bad:
+        lines.append("✅ Timeline is valid — you can render.")
+    return "\n\n".join(lines)
+
+def _timeline_is_valid(durations):
+    lo, hi = int(MODEL_MIN_CHUNK), int(MODEL_MAX_CHUNK)
+    return all(lo <= round(d) <= hi for d in durations)
+
 def _format_cost(tracker, segments=None):
     cost = tracker.total()
     lines = [f"Video gen: ${cost['video_generation_confirmed']}",
@@ -297,10 +360,23 @@ def _format_cost(tracker, segments=None):
                 lines.append(f"  • Scene {s.get('idx', 0)+1}: failed — not billed")
     return "\n".join(lines)
 
-def step4_generate_final(api_key, storyboard_frames, final_instructions, model_choice, duration, aspect_ratio, resolution, raw_script_text, production_type, max_budget):
+def step4_generate_final(api_key, storyboard_frames, final_instructions, model_choice, duration, aspect_ratio, resolution, raw_script_text, production_type, max_budget, *timeline_vals):
     set_fal_key(api_key)
     if not storyboard_frames:
         return None, "Error: No storyboard frames found. Please complete Step 3.", None, gr.update()
+
+    # The user MUST preview the timeline first (block-until-valid). timeline_vals is
+    # the fixed pool of per-scene duration editors; take the first N for N scenes.
+    n = len(storyboard_frames)
+    overrides = [v for v in timeline_vals[:n] if v is not None]
+    if len(overrides) != n or any(v in (None, "") for v in overrides):
+        gr.Warning("Preview the timeline first so each scene has a duration.")
+        return None, "⛔ Click 'Preview Timeline' and review durations before rendering.", None, gr.update()
+    if not _timeline_is_valid(overrides):
+        lo, hi = int(MODEL_MIN_CHUNK), int(MODEL_MAX_CHUNK)
+        gr.Warning(f"Every scene must be {lo}–{hi}s before rendering.")
+        return None, (f"⛔ Some scene durations are outside the model limit ({lo}–{hi}s). "
+                      f"Fix them in the timeline and try again."), None, gr.update()
 
     tracker = CostTracker(max_budget_usd=max_budget)
     tracker.add_analysis_call()
@@ -323,7 +399,7 @@ def step4_generate_final(api_key, storyboard_frames, final_instructions, model_c
             storyboard_frames=storyboard_frames, final_instructions=final_instructions,
             model_id=model_choice, cost_tracker=tracker, total_duration=duration,
             aspect_ratio=aspect_ratio, resolution=resolution, raw_script_text=raw_script_text,
-            production_type=production_type
+            production_type=production_type, duration_overrides=overrides
         )
         # result is a dict: partial video + per-segment state + status report.
         report = f"{result['status_report']}\n\n{_format_cost(tracker, result.get('segments'))}"
@@ -519,6 +595,28 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
                     max_budget_input = gr.Number(
                         label="💵 Max budget per run (USD, 0 = no cap)", value=2.0, minimum=0, step=0.5,
                         info="Refuses to start the video render if the projected cost exceeds this.")
+
+                    gr.Markdown("---")
+                    gr.Markdown("### ⏱️ Preview & adjust timeline")
+                    gr.Markdown(
+                        "See how long the ad will be BEFORE spending. Each scene shows "
+                        "its planned duration — edit any of them, then render. Chunks "
+                        f"must be {int(MODEL_MIN_CHUNK)}–{int(MODEL_MAX_CHUNK)}s (model limit)."
+                    )
+                    btn_preview_timeline = gr.Button("📋 Preview Timeline", variant="secondary")
+                    timeline_status = gr.Markdown(value="_Click 'Preview Timeline' to plan durations._")
+                    # Fixed pool of per-scene duration editors; shown up to scene count.
+                    timeline_labels, timeline_numbers, timeline_rows = [], [], []
+                    for _i in range(MAX_TIMELINE_ROWS):
+                        with gr.Row(visible=False) as _row:
+                            _lbl = gr.Markdown(value="", elem_classes="timeline-label")
+                            _num = gr.Number(label="sec", value=5, precision=0,
+                                             minimum=int(MODEL_MIN_CHUNK), maximum=int(MODEL_MAX_CHUNK),
+                                             scale=0)
+                        timeline_rows.append(_row)
+                        timeline_labels.append(_lbl)
+                        timeline_numbers.append(_num)
+
                     btn_generate_final = gr.Button("🎬 Render Final Commercial", variant="primary")
                     cost_output = gr.Textbox(label="Render Status & Cost", lines=6, interactive=False)
 
@@ -596,9 +694,32 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
         outputs=[storyboard_gallery, state_storyboard_frames]
     )
     
+    # Pre-generation timeline: plan durations (free) and lay them into the editors.
+    btn_preview_timeline.click(
+        fn=preview_timeline,
+        inputs=[state_storyboard_frames, duration_choice],
+        outputs=[timeline_status, *timeline_rows, *timeline_labels, *timeline_numbers]
+    )
+
+    # Live-recompute the status/validity whenever any duration is edited.
+    def _recalc_timeline(storyboard_frames, *vals):
+        if not storyboard_frames:
+            return gr.update()
+        n = len(storyboard_frames)
+        durs = [v for v in vals[:n] if v not in (None, "")]
+        if len(durs) != n:
+            return gr.update()
+        return _timeline_status(durs, None, n)
+    for _num in timeline_numbers:
+        _num.change(
+            fn=_recalc_timeline,
+            inputs=[state_storyboard_frames, *timeline_numbers],
+            outputs=[timeline_status]
+        )
+
     btn_generate_final.click(
         fn=step4_generate_final,
-        inputs=[api_key_input, state_storyboard_frames, final_instructions, model_choice, duration_choice, aspect_ratio_choice, resolution_choice, extracted_prompts, production_type, max_budget_input],
+        inputs=[api_key_input, state_storyboard_frames, final_instructions, model_choice, duration_choice, aspect_ratio_choice, resolution_choice, extracted_prompts, production_type, max_budget_input, *timeline_numbers],
         outputs=[final_video, cost_output, state_video_segments, rerender_scene_num]
     )
 

@@ -60,12 +60,54 @@ SECONDS_PER_WORD = 0.5
 SPEECH_LEAD_TAIL = 0.8   # brief beat before/after speaking so it doesn't feel clipped
 MAX_TOTAL_OVERRUN = 1.3  # cap total inflation vs target — model time costs money
 MODEL_MAX_CHUNK = 10.0   # hard per-chunk ceiling for the video models
+MODEL_MIN_CHUNK = 3.0    # hard per-chunk floor: models reject shorter clips
 
 
 def speech_seconds_needed(scene: Dict) -> float:
     """Seconds this scene's dialogue physically needs to be spoken naturally."""
     words = len(_scene_speech(scene).split())
     return (words * SECONDS_PER_WORD + SPEECH_LEAD_TAIL) if words else 0.0
+
+
+def clamp_chunk(seconds: float) -> int:
+    """Snap a requested chunk length to what the video models actually accept.
+
+    The models reject clips outside 3-10s, so any planned/edited duration is
+    rounded to a whole second and clamped into [MODEL_MIN_CHUNK, MODEL_MAX_CHUNK].
+    This is the SAME rule the render uses, so the preview total matches reality.
+    """
+    return int(max(MODEL_MIN_CHUNK, min(MODEL_MAX_CHUNK, round(seconds))))
+
+
+def build_timeline_preview(storyboard_frames: List[Dict], total_target_duration: int) -> Dict:
+    """Compute a per-scene timeline WITHOUT calling any model (free, instant).
+
+    Returns the planned duration for each scene (already clamped to the model's
+    real 3-10s limits, so the numbers are what would actually be rendered), the
+    dialogue word count, a short prompt snippet, and the resulting total. The UI
+    uses this for the pre-generation review step so the user sees — and can edit —
+    the length before spending anything.
+    """
+    planned = plan_dynamic_segments(storyboard_frames, total_target_duration)
+    rows = []
+    for i, (scene, dur) in enumerate(zip(storyboard_frames, planned)):
+        clamped = clamp_chunk(dur)
+        words = len(_scene_speech(scene).split())
+        prompt = (scene.get("visual_prompt") or "").strip()
+        snippet = (prompt[:70] + "…") if len(prompt) > 70 else prompt
+        rows.append({
+            "scene_number": scene.get("scene_number", i + 1),
+            "prompt_snippet": snippet,
+            "dialogue_words": words,
+            "planned_duration": clamped,
+        })
+    return {
+        "rows": rows,
+        "total": sum(r["planned_duration"] for r in rows),
+        "target": total_target_duration,
+        "min_chunk": int(MODEL_MIN_CHUNK),
+        "max_chunk": int(MODEL_MAX_CHUNK),
+    }
 
 
 def plan_dynamic_segments(storyboard_frames: List[Dict], total_target_duration: int) -> List[float]:
@@ -306,7 +348,7 @@ def _process_single_video_segment(idx: int, scene: Dict, seg_duration: float, to
         isolated_prompt += f" {sanitize_video_prompt(final_instructions)}"
 
     # Protect against schema validation failures while honoring the exact contract limits (Range 3-10)
-    safe_integer_duration = max(3, min(10, int(round(true_duration))))
+    safe_integer_duration = int(clamp_chunk(true_duration))
 
     args = {
         "prompt": isolated_prompt.strip(), 
@@ -414,17 +456,24 @@ def _process_single_video_segment(idx: int, scene: Dict, seg_duration: float, to
         print(f"      [FAILED] Scene {idx+1}: {error_msg}")
         return {**base_result, "status": "failed", "path": None, "error": error_msg}
 
-def generate_final_video(storyboard_frames: List[Dict], final_instructions: str, model_id: str, 
-                         cost_tracker: CostTracker, total_duration: int, aspect_ratio: str, 
-                         resolution: str, raw_script_text: str, production_type: str = "Narrative") -> str:
-    
+def generate_final_video(storyboard_frames: List[Dict], final_instructions: str, model_id: str,
+                         cost_tracker: CostTracker, total_duration: int, aspect_ratio: str,
+                         resolution: str, raw_script_text: str, production_type: str = "Narrative",
+                         duration_overrides: List[float] = None) -> str:
+
     model = MODELS[model_id]
     total_scenes = len(storyboard_frames)
-    
-    if not storyboard_frames: 
+
+    if not storyboard_frames:
         raise RuntimeError("No valid scenes found in the structured storyboard.")
-        
-    scene_durations = plan_dynamic_segments(storyboard_frames, total_duration)
+
+    # If the user reviewed and edited the timeline in the pre-generation step, honor
+    # their per-scene durations instead of re-planning. Otherwise fall back to the
+    # automatic speech-aware plan. Either way, clamp to the model's real limits.
+    if duration_overrides and len(duration_overrides) == total_scenes:
+        scene_durations = [float(clamp_chunk(d)) for d in duration_overrides]
+    else:
+        scene_durations = plan_dynamic_segments(storyboard_frames, total_duration)
 
     # Pre-flight budget ceiling: durations and per-segment price are known before
     # any video call, so we can refuse the whole run up-front rather than spend
