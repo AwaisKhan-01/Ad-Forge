@@ -344,6 +344,26 @@ def step4_generate_final(api_key, storyboard_frames, final_instructions, model_c
     except Exception as e:
         return None, f"Generation Failed: {str(e)}", None, gr.update()
 
+def step4_add_music(current_video, music_file, duck_under_voice):
+    """Post-step: lay a continuous music bed under the finished ad (ducked under
+    voice). Fail-open — returns the existing video if no music / on any error."""
+    if not current_video:
+        gr.Warning("Render the final commercial first, then add music.")
+        return current_video, "No rendered video to score yet."
+    if not music_file:
+        gr.Warning("Upload a music track to add a bed.")
+        return current_video, "No music track supplied."
+    from app.new_pipeline.audio_post import add_music_bed
+    try:
+        scored = add_music_bed(current_video, music_file, duck_under_voice=duck_under_voice)
+        if scored == current_video:
+            return current_video, "Music bed could not be applied — original audio kept."
+        gr.Info("Music bed added.")
+        return scored, ("Music bed added"
+                        + (" (ducked under voice)." if duck_under_voice else "."))
+    except Exception as e:
+        return current_video, f"Music step failed: {e}"
+
 def step4_rerender_segment(api_key, segments_state, scene_number, resolution, prompt_override, image_override):
     """Re-render ONE failed/edited video segment without touching the others."""
     set_fal_key(api_key)
@@ -518,6 +538,17 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
                                                     placeholder="Paste a new keyframe/asset URL if the image was the problem.")
                     btn_rerender_segment = gr.Button("🔁 Re-Render This Segment", variant="secondary")
 
+                    gr.Markdown("---")
+                    gr.Markdown("### 🎵 Music Bed")
+                    gr.Markdown(
+                        "Lay one continuous track under the finished ad. With ducking "
+                        "on, the music automatically dips under any dialogue and swells "
+                        "back in the gaps. Runs on the rendered video — no re-render."
+                    )
+                    music_upload = gr.Audio(label="Music track", type="filepath")
+                    duck_toggle = gr.Checkbox(value=True, label="Duck music under voice")
+                    btn_add_music = gr.Button("🎚️ Add Music Bed", variant="secondary")
+
                 with gr.Column(scale=3):
                     final_video = gr.Video(label="Final AdForge Export", height=600)
 
@@ -582,6 +613,12 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
         fn=step4_rerender_segment,
         inputs=[api_key_input, state_video_segments, rerender_scene_num, resolution_choice, rerender_prompt, rerender_image_url],
         outputs=[final_video, cost_output, state_video_segments]
+    )
+
+    btn_add_music.click(
+        fn=step4_add_music,
+        inputs=[final_video, music_upload, duck_toggle],
+        outputs=[final_video, cost_output]
     )
 
 if __name__ == "__main__":
