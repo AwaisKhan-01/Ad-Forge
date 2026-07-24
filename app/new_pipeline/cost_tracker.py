@@ -5,6 +5,10 @@ SEEDANCE_VIDEO_INPUT_MULTIPLIER = 0.6
 
 # CONFIRMED from fal.ai pricing (Kling v3 Pro image-to-video)
 KLING_V3_PRO_AUDIO_ON_PER_SEC = 0.168
+# CONFIRMED from fal.ai pricing (end-frame-lock models)
+KLING_O3_AUDIO_OFF_PER_SEC = 0.084   # Kling O3 Standard, audio off
+WAN_V27_720P_PER_SEC = 0.10          # Wan 2.7 @ 720p (1080p is 0.15)
+WAN_V27_1080P_PER_SEC = 0.15
 
 # ESTIMATED
 OMNI_PER_SEC_ESTIMATE = 0.10
@@ -21,6 +25,11 @@ def estimate_segment_cost(model_id: str, duration: int, resolution: str = "720p"
         return duration * OMNI_PER_SEC_ESTIMATE
     elif model_id == "kling-v3-pro":
         return duration * KLING_V3_PRO_AUDIO_ON_PER_SEC
+    elif model_id == "kling-o3":
+        return duration * KLING_O3_AUDIO_OFF_PER_SEC
+    elif model_id == "wan-v2.7":
+        rate = WAN_V27_1080P_PER_SEC if resolution == "1080p" else WAN_V27_720P_PER_SEC
+        return duration * rate
     return 0.0
 
 class BudgetExceeded(Exception):

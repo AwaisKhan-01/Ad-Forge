@@ -256,6 +256,32 @@ def _to_kling_args(args: dict, production_type: str) -> dict:
     return out
 
 
+def _to_endframe_args(args: dict, model: dict) -> dict:
+    """Translate our internal payload to the end-frame-lock contract shared by
+    Kling O3 and Wan 2.7: `image_url` (start) + optional `end_image_url` (end),
+    string duration. When our continuity logic packed image_urls as [start, end],
+    the second URL becomes the HARD last frame — this is what removes the merge
+    cut in motion graphics (clip N ends exactly where clip N+1 begins).
+
+    `generate_audio` is taken from the model registry (default off; the music-bed
+    post stage supplies the soundtrack for motion graphics).
+    """
+    urls = args.get("image_urls") or ([args["image_url"]] if args.get("image_url") else [])
+    out = {
+        "prompt": args.get("prompt", ""),
+        "duration": str(int(args.get("duration", 5))),   # these models expect a string enum
+    }
+    # Kling O3 exposes generate_audio; Wan 2.7 ignores unknown keys harmlessly,
+    # but only send it when the model declares support to keep payloads clean.
+    if "generate_audio" in model:
+        out["generate_audio"] = bool(model.get("generate_audio"))
+    if urls:
+        out["image_url"] = urls[0]
+    if len(urls) > 1 and urls[1]:
+        out["end_image_url"] = urls[1]
+    return out
+
+
 def _process_single_video_segment(idx: int, scene: Dict, seg_duration: float, total_scenes: int,
                                   final_instructions: str, model: dict, aspect_ratio: str,
                                   resolution: str, production_type: str, next_frame_url: str = "",
@@ -391,32 +417,34 @@ def _process_single_video_segment(idx: int, scene: Dict, seg_duration: float, to
         args["prompt"] = isolated_prompt.strip()
 
     # MULTI-FRAME ANIMATION (motion graphics): give the model BOTH this scene's
-    # frame and the NEXT scene's frame, and ask it to animate the transition
-    # between them. The clip then ends where the following clip begins, so motion
-    # flows across the cut instead of each chunk starting and ending static.
+    # frame and the NEXT scene's frame so motion flows across the cut.
     if mg and next_frame_url and img_url:
         args["image_urls"] = [img_url, next_frame_url]
-        # STRUCTURE: this clip is ABOUT its own scene. It must spend most of its
-        # duration performing THIS scene's animation (type reveal, element beats),
-        # and only hand off to the next composition in the final moment.
-        #
-        # An earlier version told the model to "animate the full transformation"
-        # from frame 1 to frame 2 across the whole clip. That was wrong twice over:
-        # the clip never developed its own content, and because the next clip
-        # starts on that same frame the arrival animation played twice in a row.
-        isolated_prompt += (
-            " SHOT STRUCTURE — follow this timing exactly:"
-            " (1) OPEN on the first image's composition and, for roughly the first"
-            " 80% of the clip, perform THIS scene's own animation: reveal and animate"
-            " its typography and elements, let the composition breathe and stay"
-            " readable. This is the point of the shot — do not rush past it."
-            " (2) ONLY in the last ~20% of the clip, begin the outgoing move that"
-            " leads toward the second image (elements start exiting / wiping / pushing"
-            " off). End on that outgoing motion mid-flight."
-            " The second image is ONLY the direction of the exit — do NOT settle into"
-            " it, do NOT reproduce it as a finished composition, and do NOT spend the"
-            " clip morphing between the two."
-        )
+        if model.get("input_type") == "endframe":
+            # HARD END-FRAME LOCK (Kling O3 / Wan 2.7). The model is FORCED to end
+            # exactly on the next frame, so clip N's final frame IS clip N+1's
+            # first frame — no cut at the merge. Here we WANT it to arrive at and
+            # settle on the end frame (the opposite of the soft-hint models below).
+            isolated_prompt += (
+                " CONTINUOUS MOTION-GRAPHICS SHOT — you are given a START frame and an"
+                " END frame. Animate a single fluid, fast-paced sequence that BEGINS on"
+                " the start frame, performs this scene's own motion-design beats"
+                " (kinetic type, element reveals, transforms, secondary motion) through"
+                " the middle, and ARRIVES CLEANLY on the end frame at the final moment."
+                " The end frame is the EXACT last frame of this clip — settle onto it"
+                " precisely and hold there, because the next clip continues from it."
+                " Keep constant movement the whole way; no static holds until the very"
+                " end. One continuous take, no internal cuts."
+            )
+        else:
+            # SOFT HANDOFF (models with no real end-frame control, e.g. Seedance /
+            # Gemini). We can't force the last frame, so aim toward the next
+            # composition best-effort; the stitcher hard-cuts at the join.
+            isolated_prompt += (
+                " SHOT STRUCTURE: OPEN on the first image and for ~80% of the clip"
+                " perform THIS scene's animation (kinetic type, element reveals), then"
+                " in the last ~20% begin moving toward the second image's composition."
+            )
         args["prompt"] = isolated_prompt.strip()
 
     if model.get("input_type") == "video":
@@ -426,6 +454,12 @@ def _process_single_video_segment(idx: int, scene: Dict, seg_duration: float, to
     # native audio, no aspect_ratio. Translate our internal payload to its contract.
     if model.get("input_type") == "kling":
         args = _to_kling_args(args, production_type)
+    # End-frame-lock models (Kling O3 / Wan 2.7): image_url + end_image_url.
+    elif model.get("input_type") == "endframe":
+        args = _to_endframe_args(args, model)
+        # Wan 2.7 accepts a resolution; pass it when the model declares support.
+        if model.get("resolutions"):
+            args["resolution"] = resolution if resolution in model["resolutions"] else model["resolutions"][0]
 
     print(f"\n      [DISPATCHING] Scene {idx+1}/{total_scenes} -> {safe_integer_duration}s requested")
     print(f"      [PROMPT SENT]: {args['prompt']}")

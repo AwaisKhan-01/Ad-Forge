@@ -34,4 +34,33 @@ MODELS = {
         "resolutions": None,               # 4K is a separate endpoint; not used here
         "max_images": 2,                   # start + end frame
     },
+    # --- END-FRAME-LOCK MODELS (best for motion graphics) ---
+    # These accept a hard `end_image_url`: the clip is FORCED to finish on the
+    # given frame, so clip N's last frame == clip N+1's first frame and the
+    # stitched motion-graphics timeline has no cut at the merge. Both share the
+    # same simple contract (image_url + end_image_url + string duration), handled
+    # by generator._to_endframe_args().
+    #
+    # Kling O3 Standard — cheapest current end-frame model. Audio off ($0.084/s)
+    # because motion graphics gets its soundtrack from the music-bed post stage.
+    "kling-o3": {
+        "label": "Kling O3 (end-frame lock · cheap)",
+        "endpoint": "fal-ai/kling-video/o3/standard/image-to-video",
+        "input_type": "endframe",
+        "durations": list(range(3, 11)),   # model supports 3-15; capped at 10
+        "aspect_ratios": ["auto"],         # inferred from the start image
+        "resolutions": None,
+        "max_images": 2,
+        "generate_audio": False,           # off: cheaper, music added later
+    },
+    # Wan 2.7 — also true first+last frame; different look. $0.10/s @ 720p.
+    "wan-v2.7": {
+        "label": "Wan 2.7 (end-frame lock)",
+        "endpoint": "fal-ai/wan/v2.7/image-to-video",
+        "input_type": "endframe",
+        "durations": list(range(3, 11)),
+        "aspect_ratios": ["auto"],
+        "resolutions": ["720p", "1080p"],
+        "max_images": 2,
+    },
 }

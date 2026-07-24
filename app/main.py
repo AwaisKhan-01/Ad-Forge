@@ -637,6 +637,11 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
             with gr.Row(elem_classes="panel-box"):
                 with gr.Column(scale=1):
                     model_choice = gr.Dropdown(choices=list(MODELS.keys()), value="gemini-omni-flash", label="Animation Engine")
+                    gr.Markdown(
+                        "💡 **Motion graphics?** Pick an **end-frame-lock** engine "
+                        "(*Kling O3* — cheapest, or *Wan 2.7*). They force each clip to "
+                        "end exactly on the next scene's frame, so clips join with no cut.",
+                        elem_classes="hint")
                     resolution_choice = gr.Dropdown(choices=["480p", "720p"], value="720p", label="Resolution")
                     final_instructions = gr.Textbox(label="Global Override Instructions", placeholder="E.g. Keep lighting cinematic, end with logo fade.", lines=3)
                     max_budget_input = gr.Number(
