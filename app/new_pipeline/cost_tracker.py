@@ -18,13 +18,20 @@ def estimate_segment_cost(model_id: str, duration: int, resolution: str = "720p"
         return duration * OMNI_PER_SEC_ESTIMATE
     return 0.0
 
+class BudgetExceeded(Exception):
+    """Raised when a projected spend would breach the per-run budget ceiling."""
+    pass
+
+
 class CostTracker:
-    def __init__(self):
+    def __init__(self, max_budget_usd: float = 0.0):
         self.video_generation_cost = 0.0
         self.analysis_cost = 0.0
         self.fusion_calls = 0
         self.caption_calls = 0
         self.image_generation_cost = 0.0
+        # 0 (or falsy) means "no ceiling". Otherwise a hard cap in USD.
+        self.max_budget_usd = float(max_budget_usd or 0.0)
 
     def add_segment(self, model_id: str, duration: int, resolution: str = "720p"):
         self.video_generation_cost += estimate_segment_cost(model_id, duration, resolution)
@@ -51,6 +58,26 @@ class CostTracker:
         except Exception:
             per_image = NANO_BANANA_ESTIMATE
         self.image_generation_cost += count * per_image
+
+    def current_total(self) -> float:
+        """Live running total of everything billed so far (unrounded)."""
+        aux_cost = (self.fusion_calls * FUSION_CALL_ESTIMATE) + (self.caption_calls * CAPTION_CALL_ESTIMATE)
+        return (self.video_generation_cost + self.analysis_cost
+                + aux_cost + self.image_generation_cost)
+
+    def would_exceed(self, next_cost: float) -> bool:
+        """True if spending `next_cost` more would breach the ceiling."""
+        if self.max_budget_usd <= 0:
+            return False
+        return (self.current_total() + next_cost) > self.max_budget_usd
+
+    def check_budget(self, next_cost: float, label: str = "next step"):
+        """Raise BudgetExceeded if `next_cost` would breach the ceiling."""
+        if self.would_exceed(next_cost):
+            raise BudgetExceeded(
+                f"Budget cap ${self.max_budget_usd:.2f} would be exceeded by {label}: "
+                f"already ${self.current_total():.2f}, {label} adds ${next_cost:.2f}."
+            )
 
     def total(self) -> dict:
         aux_cost = (self.fusion_calls * FUSION_CALL_ESTIMATE) + (self.caption_calls * CAPTION_CALL_ESTIMATE)

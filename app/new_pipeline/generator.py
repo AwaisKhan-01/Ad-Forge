@@ -12,7 +12,7 @@ import concurrent.futures
 from typing import List, Dict
 
 from app.new_pipeline.model_registry import MODELS
-from app.new_pipeline.cost_tracker import CostTracker
+from app.new_pipeline.cost_tracker import CostTracker, estimate_segment_cost
 from app.new_pipeline.frame_extractor import extract_last_frame
 from app.new_pipeline.uploader import upload_video
 from app.new_pipeline.stitcher import stitch_segments_natively
@@ -397,6 +397,12 @@ def generate_final_video(storyboard_frames: List[Dict], final_instructions: str,
         raise RuntimeError("No valid scenes found in the structured storyboard.")
         
     scene_durations = plan_dynamic_segments(storyboard_frames, total_duration)
+
+    # Pre-flight budget ceiling: durations and per-segment price are known before
+    # any video call, so we can refuse the whole run up-front rather than spend
+    # partially and stop mid-way. Images/analysis are already billed by this point.
+    projected_video = sum(estimate_segment_cost(model_id, d, resolution) for d in scene_durations)
+    cost_tracker.check_budget(projected_video, label=f"rendering {total_scenes} video segment(s)")
 
     segment_results = []
 

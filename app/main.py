@@ -8,7 +8,7 @@ import gradio as gr
 from app.new_pipeline.downloader import download_video
 from app.new_pipeline.uploader import upload_video
 from app.new_pipeline.model_registry import MODELS
-from app.new_pipeline.cost_tracker import CostTracker
+from app.new_pipeline.cost_tracker import CostTracker, BudgetExceeded
 
 from app.new_pipeline.analyzer import analyze_and_extract_scenes, is_motion_graphic
 from app.new_pipeline.frame_designer import generate_storyboard_frames, _process_single_scene, parse_extracted_scenes, IMAGE_MODELS, DEFAULT_IMAGE_MODEL
@@ -261,18 +261,30 @@ def load_segment_inputs(segments_state, scene_number):
     return (args.get("prompt", ""), img,
             _payload_summary(args, ("prompt", "image_url", "image_urls"), header))
 
-def _format_cost(tracker):
+def _format_cost(tracker, segments=None):
     cost = tracker.total()
-    return (f"Video gen: ${cost['video_generation_confirmed']}\n"
-            f"Images/LLM: ${cost['images_and_llm_estimated']}\n"
-            f"Total: ${cost['total_estimated']}")
+    lines = [f"Video gen: ${cost['video_generation_confirmed']}",
+             f"Images/LLM: ${cost['images_and_llm_estimated']}",
+             f"Total: ${cost['total_estimated']}"]
+    if tracker.max_budget_usd > 0:
+        lines.append(f"Budget cap: ${tracker.max_budget_usd:.2f}")
+    if segments:
+        from app.new_pipeline.cost_tracker import estimate_segment_cost
+        lines.append("\nPer-scene (rendered):")
+        for s in sorted(segments, key=lambda x: x.get("idx", 0)):
+            if s.get("status") == "ok":
+                c = estimate_segment_cost(s.get("model_id", ""), s.get("duration", 0))
+                lines.append(f"  • Scene {s.get('idx', 0)+1}: {s.get('duration', 0)}s ~${c:.3f}")
+            else:
+                lines.append(f"  • Scene {s.get('idx', 0)+1}: failed — not billed")
+    return "\n".join(lines)
 
-def step4_generate_final(api_key, storyboard_frames, final_instructions, model_choice, duration, aspect_ratio, resolution, raw_script_text, production_type):
+def step4_generate_final(api_key, storyboard_frames, final_instructions, model_choice, duration, aspect_ratio, resolution, raw_script_text, production_type, max_budget):
     set_fal_key(api_key)
     if not storyboard_frames:
         return None, "Error: No storyboard frames found. Please complete Step 3.", None, gr.update()
 
-    tracker = CostTracker()
+    tracker = CostTracker(max_budget_usd=max_budget)
     tracker.add_analysis_call()
     # Price the images with the model/size/quality actually used in step 3
     # (stamped onto each frame). Falls back to defaults for older state.
@@ -292,7 +304,7 @@ def step4_generate_final(api_key, storyboard_frames, final_instructions, model_c
             production_type=production_type
         )
         # result is a dict: partial video + per-segment state + status report.
-        report = f"{result['status_report']}\n\n{_format_cost(tracker)}"
+        report = f"{result['status_report']}\n\n{_format_cost(tracker, result.get('segments'))}"
         # Pre-select the first failed scene in the re-render box, if any.
         failed = result.get("failed_scene_numbers") or []
         # gr.Number requires an int; scene_number may be a string -> round() crashes.
@@ -303,6 +315,10 @@ def step4_generate_final(api_key, storyboard_frames, final_instructions, model_c
             except (TypeError, ValueError):
                 seg_choice = gr.update()
         return result["final_video_path"], report, result["segments"], seg_choice
+    except BudgetExceeded as be:
+        # Nothing was rendered — refused up-front. Images/analysis already billed.
+        gr.Warning(str(be))
+        return None, f"⛔ {be}\n\n{_format_cost(tracker)}", None, gr.update()
     except Exception as e:
         return None, f"Generation Failed: {str(e)}", None, gr.update()
 
@@ -454,6 +470,9 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
                     model_choice = gr.Dropdown(choices=list(MODELS.keys()), value="gemini-omni-flash", label="Animation Engine")
                     resolution_choice = gr.Dropdown(choices=["480p", "720p"], value="720p", label="Resolution")
                     final_instructions = gr.Textbox(label="Global Override Instructions", placeholder="E.g. Keep lighting cinematic, end with logo fade.", lines=3)
+                    max_budget_input = gr.Number(
+                        label="💵 Max budget per run (USD, 0 = no cap)", value=2.0, minimum=0, step=0.5,
+                        info="Refuses to start the video render if the projected cost exceeds this.")
                     btn_generate_final = gr.Button("🎬 Render Final Commercial", variant="primary")
                     cost_output = gr.Textbox(label="Render Status & Cost", lines=6, interactive=False)
 
@@ -522,7 +541,7 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
     
     btn_generate_final.click(
         fn=step4_generate_final,
-        inputs=[api_key_input, state_storyboard_frames, final_instructions, model_choice, duration_choice, aspect_ratio_choice, resolution_choice, extracted_prompts, production_type],
+        inputs=[api_key_input, state_storyboard_frames, final_instructions, model_choice, duration_choice, aspect_ratio_choice, resolution_choice, extracted_prompts, production_type, max_budget_input],
         outputs=[final_video, cost_output, state_video_segments, rerender_scene_num]
     )
 
