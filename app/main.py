@@ -102,14 +102,14 @@ def step2_extract_scenes(api_key, local_video_path, creative_directive, target_d
     except Exception as e:
         return f"PIPELINE ERROR: {str(e)}"
 
-def step3_generate_storyboard(api_key, edited_prompts, uploaded_assets, local_video_path, aspect_ratio, font_style, image_model, image_size, image_quality, production_type=""):
+def step3_generate_storyboard(api_key, edited_prompts, uploaded_assets, local_video_path, aspect_ratio, font_style, image_model, image_size, image_quality, production_type="", run_qa=True):
     set_fal_key(api_key)
     if not edited_prompts:
         return [], None
     asset_paths = uploaded_assets if uploaded_assets else []
     try:
         mg = is_motion_graphic(production_type)
-        storyboard_data = generate_storyboard_frames(edited_prompts, asset_paths, local_video_path, aspect_ratio, font_style, image_model, image_size, image_quality, motion_graphic=mg)
+        storyboard_data = generate_storyboard_frames(edited_prompts, asset_paths, local_video_path, aspect_ratio, font_style, image_model, image_size, image_quality, motion_graphic=mg, run_qa=run_qa)
 
         # Stamp the image-gen settings onto each frame so the final cost estimate
         # (step 4) can price the images with the actual model/size/quality used.
@@ -120,11 +120,24 @@ def step3_generate_storyboard(api_key, edited_prompts, uploaded_assets, local_vi
 
         # --- SURGICAL FIX: Update Gallery Captions for Split Schema ---
         gallery_format = []
+        mismatches = []
         for frame in storyboard_data:
             if frame.get("generated_image_url"):
                 display_text = frame.get('spoken_dialogue') or frame.get('sfx_music', '')
-                gallery_format.append((frame["generated_image_url"], f"Scene {frame['scene_number']}: {display_text}"))
-                
+                # Flag-only keyframe QA: mark the caption, don't change the render.
+                qa = frame.get("qa_keyframe") or {}
+                prefix = ""
+                if qa.get("status") == "mismatch":
+                    prefix = "⚠ "
+                    mismatches.append((frame['scene_number'], qa.get('reason', '')))
+                gallery_format.append((frame["generated_image_url"],
+                                       f"{prefix}Scene {frame['scene_number']}: {display_text}"))
+
+        if mismatches:
+            msg = "Keyframe/prompt mismatch flagged — review & re-pick if needed:\n" + \
+                  "\n".join(f"• Scene {n}: {r}" for n, r in mismatches)
+            gr.Warning(msg)
+
         return gallery_format, storyboard_data
     except Exception as e:
         print(f"Storyboard compilation error: {str(e)}")
@@ -236,6 +249,10 @@ def load_frame_inputs(storyboard_state, scene_number):
     header = [f"**Endpoint:** `{scene.get('image_endpoint', 'n/a')}`"]
     if scene.get("image_error"):
         header.append(f"**⚠ Last error:** {scene['image_error']}")
+    qa = scene.get("qa_keyframe") or {}
+    if qa.get("status") == "mismatch":
+        header.append(f"**⚠ Keyframe QA:** prompt/frame mismatch — {qa.get('reason', '')}. "
+                      f"Consider re-picking the keyframe time or editing the prompt below.")
     return (args.get("prompt", ""), gallery, hint,
             _payload_summary(args, ("prompt", "image_urls"), header))
 
@@ -296,6 +313,10 @@ def step4_generate_final(api_key, storyboard_frames, final_instructions, model_c
         image_size=_first.get("image_size", ""),
         image_quality=_first.get("image_quality", "high"),
     )
+    # Bill the cheap keyframe-QA vision call for each scene that ran it (step 3).
+    for _f in storyboard_frames:
+        if _f.get("qa_keyframe"):
+            tracker.add_caption_call()
 
     try:
         result = generate_final_video(
@@ -441,7 +462,11 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
                         ("Raw Expressionist (Jagged Papercut)", "raw_expressionist")
                     ]
                     font_style_choice = gr.Dropdown(choices=font_choices, value="chunky_display", label="Typography Overlay Style")
-                    
+
+                    qa_toggle = gr.Checkbox(
+                        value=True, label="🔎 Keyframe QA (flag prompt/frame mismatches)",
+                        info="Cheap vision check per scene. Flags only — never changes the render.")
+
                     btn_generate_storyboard = gr.Button("🎨 Render Storyboard", variant="primary")
 
                     gr.Markdown("---")
@@ -523,7 +548,7 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
     
     btn_generate_storyboard.click(
         fn=step3_generate_storyboard,
-        inputs=[api_key_input, extracted_prompts, uploaded_assets, preview_video, aspect_ratio_choice, font_style_choice, image_model_choice, image_size_choice, image_quality_choice, production_type],
+        inputs=[api_key_input, extracted_prompts, uploaded_assets, preview_video, aspect_ratio_choice, font_style_choice, image_model_choice, image_size_choice, image_quality_choice, production_type, qa_toggle],
         outputs=[storyboard_gallery, state_storyboard_frames]
     )
 

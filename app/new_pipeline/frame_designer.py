@@ -278,7 +278,7 @@ def parse_extracted_scenes(extracted_text: str) -> List[Dict]:
 
     return scenes
 
-def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: str, aspect_ratio: str, selected_font_style: str = "chunky_display", image_model: str = DEFAULT_IMAGE_MODEL, image_size: str = "", image_quality: str = "high", prompt_override: str = "", image_urls_override: List[str] = None, motion_graphic: bool = False) -> Dict:
+def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: str, aspect_ratio: str, selected_font_style: str = "chunky_display", image_model: str = DEFAULT_IMAGE_MODEL, image_size: str = "", image_quality: str = "high", prompt_override: str = "", image_urls_override: List[str] = None, motion_graphic: bool = False, run_qa: bool = True) -> Dict:
     target_time = parse_keyframe_to_seconds(scene.get('keyframe_time', '00:00'))
     print(f"\n[EXTRACTING] Scene {scene.get('scene_number')} -> Exact Keyframe Target: {target_time:.2f}s")
     
@@ -289,7 +289,19 @@ def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: 
         
     base_frame_url = upload_video(frame_path)
     image_urls = [base_frame_url]
-    
+
+    # KEYFRAME QA (flag-only): does the frame we actually extracted match the
+    # prompt for this scene? In fast videos the keyframe_time often lands on a
+    # different moment. We only FLAG it — the render proceeds unchanged and the
+    # user can re-pick the keyframe from the inspect panel. Never raises.
+    if run_qa:
+        from app.new_pipeline.qa import check_keyframe_match
+        verdict = check_keyframe_match(base_frame_url, scene.get("visual_prompt", ""))
+        scene["qa_keyframe"] = verdict
+        if verdict.get("status") == "mismatch":
+            print(f"      [QA ⚠] Scene {scene.get('scene_number')} keyframe/prompt "
+                  f"mismatch: {verdict.get('reason')}")
+
     assigned_indices = scene.get("assigned_assets", [])
     raw_visual_text = scene['visual_prompt']
     
@@ -477,7 +489,7 @@ def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: 
     scene["image_args"] = args
     return scene
 
-def generate_storyboard_frames(extracted_text: str, uploaded_assets: List[str], local_video_path: str, aspect_ratio: str = "9:16", selected_font_style: str = "chunky_display", image_model: str = DEFAULT_IMAGE_MODEL, image_size: str = "", image_quality: str = "high", motion_graphic: bool = False) -> List[Dict]:
+def generate_storyboard_frames(extracted_text: str, uploaded_assets: List[str], local_video_path: str, aspect_ratio: str = "9:16", selected_font_style: str = "chunky_display", image_model: str = DEFAULT_IMAGE_MODEL, image_size: str = "", image_quality: str = "high", motion_graphic: bool = False, run_qa: bool = True) -> List[Dict]:
     scenes = parse_extracted_scenes(extracted_text)
     if not scenes:
         raise ValueError("Could not parse scenes. Check VLM Agent output format.")
@@ -491,7 +503,7 @@ def generate_storyboard_frames(extracted_text: str, uploaded_assets: List[str], 
 
     storyboard_results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {executor.submit(_process_single_scene, scene, asset_urls, local_video_path, aspect_ratio, selected_font_style, image_model, image_size, image_quality, "", None, motion_graphic): scene for scene in scenes}
+        futures = {executor.submit(_process_single_scene, scene, asset_urls, local_video_path, aspect_ratio, selected_font_style, image_model, image_size, image_quality, "", None, motion_graphic, run_qa): scene for scene in scenes}
         for future in concurrent.futures.as_completed(futures):
             storyboard_results.append(future.result())
 
