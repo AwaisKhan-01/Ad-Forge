@@ -15,9 +15,10 @@ import subprocess
 
 OUTPUT_DIR = "outputs"
 
-# How long each cross-scene transition lasts. Short enough to feel like a punchy
-# ad edit, long enough to smooth the still beats models leave at chunk edges.
-XFADE_DURATION = 0.4
+# How long each cross-scene transition lasts. Kept very short: a long dissolve
+# reads as mushy/amateur in a fast-paced ad, AND every crossfade eats this many
+# seconds of audio at the boundary — which clips the start/end of dialogue.
+XFADE_DURATION = 0.15
 
 
 def _probe_duration(path: str) -> float:
@@ -59,7 +60,7 @@ def _concat_copy(segment_paths: list[str]) -> str:
     return output_path
 
 
-def stitch_segments_natively(segment_paths: list[str]) -> str:
+def stitch_segments_natively(segment_paths: list[str], hard_cut: bool = False) -> str:
     """Concatenate segments with short crossfade transitions between each cut.
 
     Builds a chained xfade (video) + acrossfade (audio) filtergraph. Each
@@ -72,6 +73,10 @@ def stitch_segments_natively(segment_paths: list[str]) -> str:
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     segment_paths = [p for p in segment_paths if p and os.path.exists(p)]
+    # Motion graphics: clips deliberately end mid-exit and open mid-arrival, so a
+    # dissolve would blend two DIFFERENT movements into mush. Hard cut instead.
+    if hard_cut and len(segment_paths) > 1:
+        return _concat_copy(segment_paths)
     if not segment_paths:
         raise RuntimeError("No video segments to stitch.")
     if len(segment_paths) == 1:

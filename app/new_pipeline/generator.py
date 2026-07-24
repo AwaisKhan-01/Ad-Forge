@@ -13,9 +13,11 @@ from typing import List, Dict
 
 from app.new_pipeline.model_registry import MODELS
 from app.new_pipeline.cost_tracker import CostTracker
-from app.new_pipeline.frame_extractor import extract_last_frame 
+from app.new_pipeline.frame_extractor import extract_last_frame
 from app.new_pipeline.uploader import upload_video
 from app.new_pipeline.stitcher import stitch_segments_natively
+from app.new_pipeline.frame_designer import _speech_only
+from app.new_pipeline.analyzer import is_motion_graphic
 
 SEGMENTS_DIR = "segments"
 
@@ -26,16 +28,15 @@ def _scene_speech(scene: Dict) -> str:
     splits it into 'spoken_dialogue' and 'sfx_music'. Prefer the split fields
     (what actually reaches this stage), falling back to the legacy 'audio' key.
     """
-    spoken = (scene.get("spoken_dialogue") or "").strip()
-    if spoken and spoken not in ("...", "-", "..", "n/a", "none"):
+    # _speech_only() strips anything that reads like a music/SFX description, so a
+    # legacy "Audio: upbeat electronic music" line is never spoken by the subject.
+    spoken = _speech_only(scene.get("spoken_dialogue") or "")
+    if spoken:
         return spoken
     # Fall back only to the legacy single "audio" field — NOT sfx_music, which is
     # background sound/ambience (e.g. "ambient", "soft piano") and must never be
     # spoken by the on-screen subject.
-    legacy = (scene.get("audio") or "").strip()
-    if legacy and legacy not in ("...", "-", "..", "n/a", "none"):
-        return legacy
-    return ""
+    return _speech_only(scene.get("audio") or "")
 
 
 def get_semantic_duration(ts_str: str) -> float:
@@ -53,39 +54,73 @@ def get_semantic_duration(ts_str: str) -> float:
     except Exception:
         return 3.0
 
+# Natural ad delivery is ~2 words/sec INCLUDING breaths and pauses. The old 0.4s
+# (150 wpm, zero pauses) systematically under-allocated, so lines got cut off.
+SECONDS_PER_WORD = 0.5
+SPEECH_LEAD_TAIL = 0.8   # brief beat before/after speaking so it doesn't feel clipped
+MAX_TOTAL_OVERRUN = 1.3  # cap total inflation vs target — model time costs money
+MODEL_MAX_CHUNK = 10.0   # hard per-chunk ceiling for the video models
+
+
+def speech_seconds_needed(scene: Dict) -> float:
+    """Seconds this scene's dialogue physically needs to be spoken naturally."""
+    words = len(_scene_speech(scene).split())
+    return (words * SECONDS_PER_WORD + SPEECH_LEAD_TAIL) if words else 0.0
+
+
 def plan_dynamic_segments(storyboard_frames: List[Dict], total_target_duration: int) -> List[float]:
     if not storyboard_frames:
         return []
-    
+
     base_weights = []
-    
-    # --- SURGICAL FIX: Speech-Aware Proportional Weighting ---
+    speech_needs = []
+
+    # --- Speech-Aware Proportional Weighting ---
     for s in storyboard_frames:
         sem_dur = get_semantic_duration(s.get("timestamp", ""))
+        need = speech_seconds_needed(s)
+        speech_needs.append(need)
+        # The weight of this scene is whichever is larger: the VLM's timestamp, or
+        # the physical speech requirement.
+        base_weights.append(max(sem_dur, need))
 
-        # Calculate how long the dialogue physically takes to speak (0.4s per word).
-        # The parser splits audio into spoken_dialogue / sfx_music, so read those —
-        # the legacy "audio" key was always empty and made this branch dead code.
-        scene_audio = _scene_speech(s)
-        word_count = len(scene_audio.split()) if scene_audio and "music" not in scene_audio.lower() else 0
-        audio_time = word_count * 0.4
-        
-        # The weight of this scene is whichever is larger: the VLM's timestamp, or the physical speech requirement
-        base_weights.append(max(sem_dur, audio_time))
-        
     total_weight = sum(base_weights)
-    
-    allocated_durations = []
+
     if total_weight <= 0:
         base = float(total_target_duration) / len(storyboard_frames)
         return [base] * len(storyboard_frames)
-        
-    for w in base_weights:
-        # We STRICTLY map the weights back to the exact target duration. 
-        # This prevents video bloat while guaranteeing dialogue-heavy scenes get the seconds they need.
-        allocated = (w / total_weight) * float(total_target_duration)
-        allocated_durations.append(allocated)
-        
+
+    # Proportional share of the target, then RAISE any scene that would be given
+    # less time than its dialogue physically needs. Pure proportional allocation
+    # squeezed speech-heavy scenes below their real requirement, which is what cut
+    # dialogue off mid-sentence.
+    allocated_durations = []
+    for w, need in zip(base_weights, speech_needs):
+        proportional = (w / total_weight) * float(total_target_duration)
+        allocated_durations.append(max(proportional, need))
+
+    # Cost guard: honoring every need can inflate the video. Scale back toward the
+    # target if we overshoot the allowed overrun, but never below what speech needs.
+    budget = float(total_target_duration) * MAX_TOTAL_OVERRUN
+    total_alloc = sum(allocated_durations)
+    if total_alloc > budget:
+        slack = [a - n for a, n in zip(allocated_durations, speech_needs)]
+        excess = total_alloc - budget
+        total_slack = sum(slack)
+        if total_slack > 0:
+            shrink = min(1.0, excess / total_slack)
+            allocated_durations = [a - s * shrink for a, s in zip(allocated_durations, slack)]
+
+    # Warn about anything the model physically cannot deliver in one chunk.
+    for i, (need, alloc) in enumerate(zip(speech_needs, allocated_durations)):
+        if need > MODEL_MAX_CHUNK:
+            print(f"      [PACING WARNING] Scene {i+1} needs ~{need:.1f}s of speech but a "
+                  f"chunk maxes out at {MODEL_MAX_CHUNK:.0f}s — shorten this line or split the scene.")
+        elif alloc + 0.05 < need:
+            print(f"      [PACING WARNING] Scene {i+1} allocated {alloc:.1f}s but needs "
+                  f"~{need:.1f}s to finish speaking.")
+
+    print(f"      [PACING] target={total_target_duration}s -> planned={sum(allocated_durations):.1f}s")
     return allocated_durations
 
 def sanitize_video_prompt(raw_desc: str) -> str:
@@ -127,6 +162,23 @@ def sanitize_video_prompt(raw_desc: str) -> str:
         clean += '.'
     return clean
 
+def sanitize_camera_motion(raw_motion: str) -> str:
+    """Light cleanup for the camera-motion field.
+
+    Deliberately does NOT strip editing words the way sanitize_video_prompt does:
+    terms like "cut", "pan", "dolly", "fade" are legitimate camera vocabulary and
+    removing them destroys the reference video's actual movement description.
+    Only quotes and safety substitutions are applied.
+    """
+    clean = (raw_motion or "").replace('"', '').replace("'", "").strip()
+    for bad_word, safe_word in {"shoot": "film", "shot": "filmed", "gun": "prop"}.items():
+        clean = re.sub(rf'(?i)\b{bad_word}\b', safe_word, clean)
+    clean = re.sub(r'\s{2,}', ' ', clean).strip()
+    if clean and not clean.endswith('.'):
+        clean += '.'
+    return clean
+
+
 def _download_result(url: str) -> str:
     os.makedirs(SEGMENTS_DIR, exist_ok=True)
     path = os.path.join(SEGMENTS_DIR, f"{uuid.uuid4()}.mp4")
@@ -141,7 +193,8 @@ def _download_result(url: str) -> str:
 
 def _process_single_video_segment(idx: int, scene: Dict, seg_duration: float, total_scenes: int, 
                                   final_instructions: str, model: dict, aspect_ratio: str, 
-                                  resolution: str, production_type: str) -> Dict:
+                                  resolution: str, production_type: str, next_frame_url: str = "",
+                                  prev_frame_url: str = "") -> Dict:
     # Prefer the cleaned description frame_designer produced (meta/sequence text
     # stripped); fall back to the raw VLM text only if the image stage was skipped.
     raw_v_desc = scene.get("visual_prompt_sterilized") or scene.get("visual_prompt", "")
@@ -152,11 +205,43 @@ def _process_single_video_segment(idx: int, scene: Dict, seg_duration: float, to
     raw_v_desc = re.sub(r"(?i)\s*\(?#(?:asset|image)\s*\d+\)?", " <IMAGE_REF_0> ", raw_v_desc)
     
     v_desc = sanitize_video_prompt(raw_v_desc)
-    m_desc = sanitize_video_prompt(scene.get("motion", ""))
+    # Camera motion gets a LIGHT clean only. Running the full sanitizer here used
+    # to delete "cut", "fade" and "transition" from the motion field, mangling
+    # real camera directions (e.g. "cut to a slow pan" -> "a slow pan") and losing
+    # the reference video's actual movement.
+    m_desc = sanitize_camera_motion(scene.get("motion", ""))
     img_url = scene.get("generated_image_url")
     scene_audio = _scene_speech(scene)
     
-    isolated_prompt = f"{v_desc} Camera motion: {m_desc} Cinematic lighting, clean professional render."
+    # State the movement as a REQUIREMENT to match, not a loose hint — the model
+    # was otherwise inventing its own movement instead of following the reference.
+    # For motion graphics the 'motion' field describes ELEMENT animation (mask
+    # reveal, scale punch), not a camera move, so it must not be framed as camera.
+    if is_motion_graphic(production_type):
+        motion_clause = (f" ANIMATION — perform exactly this: {m_desc}"
+                         if m_desc else " ANIMATION: clean graphic movement.")
+        # Scenes after the first are mid-sequence: opening from a dead stop is what
+        # makes concatenated chunks feel stop-start rather than one flowing piece.
+        if idx > 0:
+            motion_clause += (" ENTRY: this shot is mid-sequence — open already in motion,"
+                              " with elements arriving/settling from the previous shot's"
+                              " exit. Never begin on a frozen, static frame.")
+        # No style vocabulary — the supplied frames define the look. Saying "flat
+        # graphic render" here forced a cartoon aesthetic onto every reference.
+        style_clause = " Preserve the exact visual style, materials and lighting of the supplied frames."
+    else:
+        motion_clause = (f" CAMERA — match this movement exactly: {m_desc} "
+                         f"Do not invent any other camera movement."
+                         if m_desc else " CAMERA: locked-off static shot, no camera movement.")
+        style_clause = " Cinematic lighting, clean professional render."
+    isolated_prompt = f"{v_desc}{motion_clause}{style_clause}"
+
+    # MUSIC SUPPRESSION: each chunk is generated independently, so if every chunk
+    # is allowed to invent a score you get a different tempo/key per chunk and the
+    # music audibly lurches at every cut. Ask for speech + natural ambience only;
+    # a single continuous music bed can be laid over the finished timeline later.
+    isolated_prompt += (" No background music, no soundtrack, no score — "
+                        "natural ambient sound only.")
     
     # --- SURGICAL FIX: Enforce strict proportional duration pacing to eliminate timeline bloat ---
     true_duration = seg_duration
@@ -174,8 +259,25 @@ def _process_single_video_segment(idx: int, scene: Dict, seg_duration: float, to
                 f'CRITICAL TIMING: Start the clip cleanly without text; typography animates on screen only as the subject begins speaking.'
             )
         
-    elif scene_audio and "Motion Graphic" in production_type:
-        isolated_prompt += " Smooth kinetic motion. Text animates dynamically."
+    elif is_motion_graphic(production_type):
+        # Motion graphics: nobody speaks. Drive precise graphic animation and, when
+        # the storyboard supplies design copy, animate that exact text.
+        copy_text = (scene.get("on_screen_text") or "").strip().replace('"', "")
+        isolated_prompt += (
+            " MOTION GRAPHICS — AUTHOR A FULL ANIMATED SEQUENCE, do not merely add drift to "
+            "the still image. The supplied frame is one key pose; you must CREATE the "
+            "surrounding animation. Choreograph multiple beats inside this clip: elements "
+            "enter, transform and exit with snappy overshoot and settle, staggered timing, "
+            "mask/wipe reveals, scale punches, whip transitions and secondary motion. "
+            "Fast-paced and fluid with continuous movement from the first frame to the last "
+            "— never a static or near-still shot. Precise, deliberate easing. "
+            "No talking, no lip-sync, no human speech."
+        )
+        if copy_text:
+            isolated_prompt += (
+                f' Animated typography reads exactly "{copy_text}" — kinetic type that '
+                f'stays perfectly legible and correctly spelled, never warped or distorted.'
+            )
             
     if idx == total_scenes - 1 and final_instructions:
         isolated_prompt += f" {sanitize_video_prompt(final_instructions)}"
@@ -192,6 +294,65 @@ def _process_single_video_segment(idx: int, scene: Dict, seg_duration: float, to
     if img_url:
         args["image_url"] = img_url
         args["image_urls"] = [img_url]
+
+    mg = is_motion_graphic(production_type)
+    transition = (scene.get("transition") or "cut").strip().lower()
+
+    # --- NARRATIVE CONTINUITY (live-action) ---
+    # Stitched narrative clips used to look like unrelated shots because each was
+    # generated from a single isolated frame. Now we use the boundary type the
+    # analyzer detected from the reference:
+    #   • continuous → this is the SAME unbroken take as the previous shot, so start
+    #     from its last frame and carry the motion through (a long single-camera ad).
+    #   • cut → a NEW shot, but pass the previous frame as an IDENTITY reference so
+    #     the subject/wardrobe/lighting/world stay consistent across the cut.
+    if not mg and img_url and prev_frame_url and idx > 0:
+        if transition == "continuous":
+            args["image_urls"] = [prev_frame_url, img_url]
+            isolated_prompt += (
+                " CONTINUOUS TAKE: this is the SAME unbroken shot as the previous clip — "
+                "the camera never cut. Begin exactly on the first (previous) frame and "
+                "continue the motion seamlessly toward the second frame's composition, "
+                "keeping the same camera, subject, wardrobe and lighting. No cut, no jump."
+            )
+        else:
+            args["image_urls"] = [img_url, prev_frame_url]
+            isolated_prompt += (
+                " SHOT IDENTITY: this is a NEW shot (a clean cut from the previous one). "
+                "Render this scene's composition, but keep the SAME subject, wardrobe, "
+                "lighting mood and world as shown in the reference frame. Do NOT continue "
+                "the previous camera motion — this is a distinct shot, not a morph."
+            )
+        args["prompt"] = isolated_prompt.strip()
+
+    # MULTI-FRAME ANIMATION (motion graphics): give the model BOTH this scene's
+    # frame and the NEXT scene's frame, and ask it to animate the transition
+    # between them. The clip then ends where the following clip begins, so motion
+    # flows across the cut instead of each chunk starting and ending static.
+    if mg and next_frame_url and img_url:
+        args["image_urls"] = [img_url, next_frame_url]
+        # STRUCTURE: this clip is ABOUT its own scene. It must spend most of its
+        # duration performing THIS scene's animation (type reveal, element beats),
+        # and only hand off to the next composition in the final moment.
+        #
+        # An earlier version told the model to "animate the full transformation"
+        # from frame 1 to frame 2 across the whole clip. That was wrong twice over:
+        # the clip never developed its own content, and because the next clip
+        # starts on that same frame the arrival animation played twice in a row.
+        isolated_prompt += (
+            " SHOT STRUCTURE — follow this timing exactly:"
+            " (1) OPEN on the first image's composition and, for roughly the first"
+            " 80% of the clip, perform THIS scene's own animation: reveal and animate"
+            " its typography and elements, let the composition breathe and stay"
+            " readable. This is the point of the shot — do not rush past it."
+            " (2) ONLY in the last ~20% of the clip, begin the outgoing move that"
+            " leads toward the second image (elements start exiting / wiping / pushing"
+            " off). End on that outgoing motion mid-flight."
+            " The second image is ONLY the direction of the exit — do NOT settle into"
+            " it, do NOT reproduce it as a finished composition, and do NOT spend the"
+            " clip morphing between the two."
+        )
+        args["prompt"] = isolated_prompt.strip()
 
     if model.get("input_type") == "video": 
         args["resolution"] = resolution
@@ -237,35 +398,71 @@ def generate_final_video(storyboard_frames: List[Dict], final_instructions: str,
         
     scene_durations = plan_dynamic_segments(storyboard_frames, total_duration)
 
-    print("\n[STORYBOARD ENGINE] Initializing Parallel Video Rendering Matrix...")
     segment_results = []
 
+    if is_motion_graphic(production_type):
+        # SEQUENTIAL CHAINING: each clip starts on the previous clip's final frame
+        # so the animation flows continuously across cuts. This cannot be
+        # parallelised — scene N depends on scene N-1's rendered output.
+        # Each clip animates from its own frame TO the next scene's frame, so the
+        # segments join seamlessly. Frames are all known up-front, so this still
+        # runs in PARALLEL.
+        print("\n[STORYBOARD ENGINE] Multi-frame transition rendering (motion graphics)…")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            futures = []
+            for idx, scene in enumerate(storyboard_frames):
+                nxt = ""
+                if idx + 1 < total_scenes:
+                    nxt = storyboard_frames[idx + 1].get("generated_image_url") or ""
+                futures.append(executor.submit(
+                    _process_single_video_segment,
+                    idx, scene, scene_durations[idx], total_scenes,
+                    final_instructions, model, aspect_ratio, resolution, production_type,
+                    nxt,
+                ))
+            for f in concurrent.futures.as_completed(futures):
+                segment_results.append(f.result())
+        return _finalize_segments(segment_results, model_id, cost_tracker, resolution, hard_cut=True)
+
+    # Narrative: pass each scene the PREVIOUS storyboard frame so continuity is
+    # driven by the analyzer's per-scene 'transition' (continuous vs cut). Using
+    # the previous *storyboard* frame (not the rendered clip) keeps this parallel.
+    print("\n[STORYBOARD ENGINE] Initializing Parallel Video Rendering Matrix...")
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         futures = []
         for idx, scene in enumerate(storyboard_frames):
+            prev = ""
+            if idx > 0:
+                prev = storyboard_frames[idx - 1].get("generated_image_url") or ""
             futures.append(executor.submit(
                 _process_single_video_segment,
                 idx, scene, scene_durations[idx], total_scenes,
-                final_instructions, model, aspect_ratio, resolution, production_type
+                final_instructions, model, aspect_ratio, resolution, production_type,
+                "", prev,
             ))
 
         for future in concurrent.futures.as_completed(futures):
             # _process_single_video_segment never raises; it returns a status dict.
             segment_results.append(future.result())
 
-    segment_results.sort(key=lambda x: x["idx"])
+    return _finalize_segments(segment_results, model_id, cost_tracker, resolution)
 
+
+def _finalize_segments(segment_results: List[Dict], model_id: str,
+                       cost_tracker: CostTracker, resolution: str,
+                       hard_cut: bool = False) -> Dict:
+    """Order, bill and assemble rendered segments (shared by both render paths)."""
+    segment_results.sort(key=lambda x: x["idx"])
     # Attach the model_id so a later manual re-render knows which engine to use,
     # and bill only for the chunks that actually succeeded.
     for res in segment_results:
         res["model_id"] = model_id
         if res["status"] == "ok":
             cost_tracker.add_segment(model_id, res["duration"], resolution)
+    return _assemble_from_segments(segment_results, hard_cut=hard_cut)
 
-    return _assemble_from_segments(segment_results)
 
-
-def _assemble_from_segments(segment_results: List[Dict]) -> Dict:
+def _assemble_from_segments(segment_results: List[Dict], hard_cut: bool = False) -> Dict:
     """Stitch whatever chunks succeeded and report on any that failed.
 
     Returns a dict (never just a path) so the UI can render a partial video AND
@@ -279,7 +476,7 @@ def _assemble_from_segments(segment_results: List[Dict]) -> Dict:
     final_video_path = None
     if ok:
         print("\n[STITCHING] Compiling successful scenes into master timeline...")
-        final_video_path = stitch_segments_natively([r["path"] for r in ok])
+        final_video_path = stitch_segments_natively([r["path"] for r in ok], hard_cut=hard_cut)
 
     if failed:
         lines = [f"⚠ {len(failed)} of {len(segment_results)} scene(s) failed. "

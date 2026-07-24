@@ -25,7 +25,13 @@ class Scene(BaseModel):
     keyframe_time: str = Field(..., description="The EXACT single second (e.g., '00:02') where the visual_prompt is most perfectly visible.")
     visual_prompt: str = Field(..., description="ONE strictly static, frozen visual description. NO transitions or sequential actions.")
     motion: str = Field(..., description="Camera movement description.")
-    audio: str = Field(..., description="Audio cues or dialogue for this scene.")
+    # Audio is split so spoken words are never confused with background score.
+    # Only `dialogue` is ever spoken by the subject or rendered as typography.
+    dialogue: str = Field(default="", description="ONLY the literal words spoken aloud in this scene. Empty string if nobody speaks. NEVER describe music or sound effects here.")
+    on_screen_text: str = Field(default="", description="Short punchy copy to RENDER as animated typography (motion graphics). Max ~6 words. Not speech.")
+    transition: str = Field(default="cut", description="How this scene follows the PREVIOUS one in the reference: 'continuous' (same unbroken shot, camera kept rolling) or 'cut' (a new shot). First scene is always 'cut'.")
+    sfx_music: str = Field(default="", description="Background music / sound-effect DESCRIPTION only (e.g. 'upbeat synth'). Never spoken aloud, never shown as text.")
+    audio: str = Field(default="", description="DEPRECATED legacy combined field. Prefer dialogue + sfx_music.")
     assigned_assets: List[int] = Field(default=[], description="Indices of the user assets (e.g. [0] for Asset 0) that apply STRICTLY to this scene. Leave empty [] if none apply.")
 
 class StoryboardOutput(BaseModel):
@@ -78,9 +84,38 @@ def _calculate_dynamic_pacing(video_url: str, target_duration: int) -> int:
     print(f"[*] Pacing Engine Decision: {final_scenes} scenes required.")
     return final_scenes
 
+def is_motion_graphic(production_type: str) -> bool:
+    """True when the user asked for a designed/kinetic-graphics ad rather than
+    live-action narrative. Every stage tunes its prompts off this flag."""
+    return "motion graphic" in (production_type or "").lower()
+
+
+# Extra rules injected only for motion-graphics runs. Live-action rules (dialogue,
+# lip-sync, camera work) are actively harmful here, so they are replaced.
+_MOTION_GRAPHIC_RULES = """
+MOTION-GRAPHICS MODE (OVERRIDES CONFLICTING RULES ABOVE):
+M1. NO SPOKEN DIALOGUE. Nobody talks on screen. 'dialogue' MUST be "" for every scene.
+M2. ON-SCREEN COPY: put the short punchy words that should APPEAR as animated
+    typography in 'on_screen_text' (max 6 words per scene, ALL CAPS-friendly, no
+    full sentences). This is design copy, not speech.
+M3. VISUAL = DESIGNED COMPOSITION. Describe the layout and elements: background
+    treatment, product/logo placement, negative space, where the type sits.
+    CRITICAL: describe the REFERENCE VIDEO'S ACTUAL rendering style — if it is
+    dark 3D with glass/glow, say so; if it is photoreal, say so. Do NOT default to
+    "flat vector" or "illustration" unless the reference genuinely looks that way.
+M4. 'motion' = KINETIC BEHAVIOUR of the graphics, NOT a camera move. Use motion
+    design vocabulary: slide in, mask reveal, scale punch, wipe, whip pan, kinetic
+    type stagger, morph, parallax drift, snap cut on the beat.
+M5. VISUAL CONSISTENCY: all scenes share ONE design system. Repeat the same
+    palette, type treatment and layout logic in every scene so the ad reads as a
+    single designed piece, not unrelated frames.
+M6. PACE: motion-graphic ads cut fast. Favour short, punchy scenes.
+"""
+
 def _generate_initial_draft(video_url: str, target_duration: int, exact_scenes: int, creative_directive: str, production_type: str, asset_instructions: str) -> dict:
     max_words = int(target_duration * 2.5)
-    
+    mg = is_motion_graphic(production_type)
+
     prompt = f"""Analyze the ENTIRE reference video and generate a highly condensed storyboard for a {target_duration}-second {production_type} commercial.
 
 CRITICAL USER DIRECTIVE: "{creative_directive if creative_directive else 'Direct Adaptation'}"
@@ -91,10 +126,16 @@ USER ASSET INSTRUCTIONS:
 RULES:
 1. NARRATIVE COMPRESSION: Compress the storyline into exactly {exact_scenes} scenes. Select moments from BEGINNING, MIDDLE, and END.
 2. NATIVE AUDIO CONTINUITY: Listen to the speech, spoken dialogue, and voiceover natively present in the video file. Edit and condense the actual spoken dialogue into a seamless, continuous script (maximum {max_words} words total).
+2b. SPLIT AUDIO (CRITICAL): You MUST separate audio into two different fields.
+   - 'dialogue': ONLY the literal words a person says out loud, exactly as they should be spoken. If nobody speaks in this scene, use an empty string "".
+   - 'sfx_music': a DESCRIPTION of background music or sound effects (e.g. "upbeat synth, no vocals").
+   NEVER put music or sound descriptions in 'dialogue' — text in 'dialogue' gets spoken aloud by the on-screen person and rendered as on-screen typography, so putting "upbeat electronic music" there would make the actor literally say those words. Likewise never put spoken words in 'sfx_music'.
+2c. DIALOGUE LENGTH PER SCENE: a scene can only hold about 2 words per second of its timestamp span. Keep each scene's 'dialogue' short enough to be spoken naturally within that scene's duration. Split long lines across scenes rather than overloading one.
 3. MANDATORY ASSET MAPPING (CRITICAL): Read the 'USER ASSET INSTRUCTIONS' above, which lists the available assets as "Asset 1", "Asset 2", etc. Asset numbering starts at 1. You MUST replace the original subjects or objects in the video with the requested assets. If the user says "Asset 1 is the main person", you MUST write "#Asset1" instead of "man" or "woman" in the 'visual_prompt', AND you MUST put the integer 1 in the 'assigned_assets' array (e.g., [1]) for EVERY scene that character appears in. The number in 'assigned_assets' MUST EXACTLY MATCH the number in the "#Asset" tag you wrote in 'visual_prompt'. NEVER use 0 or any number greater than the number of assets listed. Do NOT leave the array empty if the subject is present.
 4. FREEZE TIME (CRITICAL): The 'visual_prompt' MUST describe a STILL PHOTOGRAPH. NO TIMELINES. NO SEQUENCES. You are STRICTLY FORBIDDEN from using the word "then". Put all camera movement in the 'motion' field.
 5. ESCAPING: NEVER use unescaped double quotes inside values. Use single quotes.
 6. EXPLICIT KEYFRAME TARGETING: You must provide a 'keyframe_time' (e.g. '00:05'). This must be the EXACT second within the timestamp block that perfectly visually matches your static 'visual_prompt'.
+7. SHOT CONTINUITY: For each scene set 'transition' based on what the REFERENCE video does at its start. Use 'continuous' if this scene is the SAME unbroken shot as the previous one (no cut — the camera kept rolling on the same subject/framing, e.g. a long single take). Use 'cut' if the reference cuts to a NEW shot (different angle, framing or moment). The FIRST scene is always 'cut'. Be accurate — do not mark everything 'cut' by default; long single-take ads should be mostly 'continuous'.
 7. KEYFRAME SUBJECT MATCH (CRITICAL): The frame at 'keyframe_time' will be extracted from the source video and used as the composition base for image generation. It MUST actually contain the primary subject you describe in 'visual_prompt'. If your visual_prompt describes a PERSON (e.g. the on-screen actor speaking), 'keyframe_time' MUST point at a second where that PERSON is clearly on screen — NOT a second showing a UI screen, product shot, logo, or B-roll. If the scene is about the talking person, pick a timestamp block AND keyframe_time where the person's face/body is visible. Do NOT set keyframe_time to a moment showing a screen/graphic when the visual_prompt is about a person, or vice versa — the base frame and the described subject must be the SAME type of shot.
 
 OUTPUT FORMAT:
@@ -109,11 +150,15 @@ You must output pure JSON matching this schema:
       "keyframe_time": "00:02",
       "visual_prompt": "string",
       "motion": "string",
-      "audio": "string",
+      "dialogue": "string",
+      "on_screen_text": "string",
+      "transition": "cut | continuous",
+      "sfx_music": "string",
       "assigned_assets": []
     }}
   ]
 }}
+{_MOTION_GRAPHIC_RULES if mg else ""}
 """
     result = fal_client.subscribe(
         VLM_ENDPOINT, 
@@ -140,6 +185,7 @@ QA TASK (FIX ERRORS DIRECTLY IN THE JSON):
 1. EXACTLY {exact_scenes} scenes?
 2. ENFORCE ASSET MAPPING: Asset numbering starts at 1 and must never exceed the number of assets listed in USER ASSET INSTRUCTIONS. Did the draft assign assets to the correct scenes? If the draft left 'assigned_assets' empty `[]` but the subject is clearly in the scene, YOU MUST FIX IT by adding the integer to the array (e.g., `[1]`) and injecting `#Asset1` into the visual_prompt. Verify that for EVERY scene the number inside each "#AssetN" tag in 'visual_prompt' EXACTLY MATCHES an entry in that scene's 'assigned_assets' array — if they disagree, correct the array to match the tags. Replace any `0` index with the correct 1-based number.
 3. ENFORCE TIME FREEZE: Read every 'visual_prompt'. If you see the word "then" or any sequential action (e.g., "walks in, then sits"), DELETE IT. Rewrite it to describe a single, frozen moment.
+3b. ENFORCE AUDIO SPLIT: 'dialogue' must contain ONLY literal spoken words. If a scene's 'dialogue' contains a music or sound description (e.g. "upbeat electronic music", "soft piano", "whoosh sfx"), MOVE that text into 'sfx_music' and set 'dialogue' to "" (or to the real spoken words if any exist). This is critical: 'dialogue' is spoken aloud by the on-screen person and shown as on-screen text.
 4. KEYFRAME INTEGRITY: Ensure 'keyframe_time' is present and accurately reflects a static moment within the scene's 'timestamp'.
 5. KEYFRAME SUBJECT MATCH (CRITICAL): For each scene, verify the frame at 'keyframe_time' actually shows the SAME subject type as the 'visual_prompt'. If visual_prompt describes a PERSON but keyframe_time points at a screen/UI/product/logo/B-roll moment (or vice versa), FIX keyframe_time (and the 'timestamp' block if needed) to a second where the described subject is genuinely on screen. The extracted base frame must match the described subject.
 
@@ -188,6 +234,24 @@ def analyze_and_extract_scenes(video_url: str, target_duration: int, creative_di
 
     output_str = f"=== STRATEGY ===\n{final_storyboard.macro_strategy}\n\n=== STORYBOARD ===\n[MASTER AUDIO]\n{final_storyboard.master_audio}\n\n"
     for scene in final_storyboard.scenes:
-        # SURGICAL FIX 3: Inject the Keyframe line into the output string so frame_designer.py can regex it
-        output_str += f"SCENE {scene.scene_number}\nTimestamp: {scene.timestamp}\nKeyframe: {scene.keyframe_time}\nVisual: {scene.visual_prompt}\nMotion: {scene.motion}\nAudio: {scene.audio}\nAssigned Assets: {json.dumps(scene.assigned_assets)}\n\n"
+        # Emit dialogue and music on SEPARATE lines so the parser never routes a
+        # music description into spoken_dialogue (which would make the on-screen
+        # actor literally say "upbeat electronic music" and render it as text).
+        # Falls back to the legacy combined 'audio' field for older responses.
+        spoken = (scene.dialogue or "").strip()
+        music = (scene.sfx_music or "").strip()
+        if not spoken and not music and (scene.audio or "").strip():
+            spoken = scene.audio.strip()
+        output_str += (
+            f"SCENE {scene.scene_number}\n"
+            f"Timestamp: {scene.timestamp}\n"
+            f"Keyframe: {scene.keyframe_time}\n"
+            f"Visual: {scene.visual_prompt}\n"
+            f"Motion: {scene.motion}\n"
+            f"Spoken Dialogue: {spoken}\n"
+            f"On-Screen Text: {(scene.on_screen_text or '').strip()}\n"
+            f"Transition: {(scene.transition or 'cut').strip()}\n"
+            f"SFX/Music: {music}\n"
+            f"Assigned Assets: {json.dumps(scene.assigned_assets)}\n\n"
+        )
     return output_str.strip()

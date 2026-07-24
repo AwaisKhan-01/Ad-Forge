@@ -81,6 +81,34 @@ TYPOGRAPHY_PRESETS = {
     "raw_expressionist": "distorted jagged papercut font style, irregular blocky expressionist typography, raw textured distressed zine-style graphic layout"
 }
 
+# Words that mark a string as an audio DESCRIPTION rather than spoken words.
+# A legacy combined "Audio:" line holding e.g. "upbeat electronic music" must never
+# be treated as dialogue: it would be spoken aloud by the on-screen actor AND
+# rendered as on-screen typography.
+_AUDIO_DESCRIPTOR_HINTS = (
+    "music", "score", "soundtrack", "beat", "melody", "instrumental", "synth",
+    "piano", "guitar", "drum", "bass", "ambient", "ambience", "sfx",
+    "sound effect", "whoosh", "riser", "swell", "no vocals", "upbeat",
+    "background audio", "audio cue", "silence", "silent",
+)
+
+def _speech_only(text: str) -> str:
+    """Return `text` only if it reads like literal spoken words.
+
+    Returns "" when the string is clearly a music/SFX description, so descriptive
+    audio can never leak into the spoken-dialogue path.
+    """
+    t = (text or "").strip()
+    if not t or t in ("...", "-", "..", "n/a", "none", "N/A"):
+        return ""
+    low = t.lower()
+    # Quoted text is almost always real dialogue, even if it mentions music.
+    if '"' in t or "'" in t:
+        return t
+    if any(h in low for h in _AUDIO_DESCRIPTOR_HINTS):
+        return ""
+    return t
+
 def parse_keyframe_to_seconds(kf_str: str) -> float:
     try:
         clean_str = kf_str.strip().replace(" ", "")
@@ -175,8 +203,10 @@ def parse_extracted_scenes(extracted_text: str) -> List[Dict]:
                         "keyframe_time": s.get("keyframe_time", ""),
                         "visual_prompt": s.get("visual_prompt", ""),
                         "motion": s.get("motion", ""),
-                        "spoken_dialogue": s.get("spoken_dialogue", "") or s.get("audio", ""),
+                        "spoken_dialogue": s.get("dialogue", "") or s.get("spoken_dialogue", "") or _speech_only(s.get("audio", "")),
                         "sfx_music": s.get("sfx_music", ""),
+                        "on_screen_text": s.get("on_screen_text", ""),
+                        "transition": s.get("transition", "cut"),
                         "assigned_assets": assets if isinstance(assets, list) else [],
                     })
                 return scenes
@@ -196,6 +226,8 @@ def parse_extracted_scenes(extracted_text: str) -> List[Dict]:
         "visual": "visual_prompt", "visual prompt": "visual_prompt",
         "motion": "motion",
         "spoken dialogue": "spoken_dialogue", "spoken": "spoken_dialogue", "dialogue": "spoken_dialogue",
+        "on-screen text": "on_screen_text", "on screen text": "on_screen_text", "onscreen text": "on_screen_text",
+        "transition": "transition",
         "sfx/music": "sfx_music", "sfx": "sfx_music", "music": "sfx_music",
         "assigned assets": "assigned_assets", "assigned": "assigned_assets", "assets": "assigned_assets",
     }
@@ -209,7 +241,7 @@ def parse_extracted_scenes(extracted_text: str) -> List[Dict]:
         fields = {
             "scene_number": scene_number, "timestamp": "", "keyframe_time": "",
             "visual_prompt": "", "motion": "", "spoken_dialogue": "",
-            "sfx_music": "", "assigned_assets": [],
+            "sfx_music": "", "on_screen_text": "", "transition": "cut", "assigned_assets": [],
         }
         raw_audio = ""  # analyzer emits a single "Audio:" line
 
@@ -232,15 +264,21 @@ def parse_extracted_scenes(extracted_text: str) -> List[Dict]:
             elif label.strip().lower() == "audio":
                 raw_audio = value
 
-        # Route a single "Audio:" line to spoken_dialogue so typography/speech works.
+        # Legacy single "Audio:" line: route it to dialogue ONLY if it reads like
+        # spoken words. Music/SFX descriptions go to sfx_music instead, so they are
+        # never spoken aloud or rendered as on-screen typography.
         if raw_audio and not fields["spoken_dialogue"] and not fields["sfx_music"]:
-            fields["spoken_dialogue"] = raw_audio
+            speech = _speech_only(raw_audio)
+            if speech:
+                fields["spoken_dialogue"] = speech
+            else:
+                fields["sfx_music"] = raw_audio
 
         scenes.append(fields)
 
     return scenes
 
-def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: str, aspect_ratio: str, selected_font_style: str = "chunky_display", image_model: str = DEFAULT_IMAGE_MODEL, image_size: str = "", image_quality: str = "high") -> Dict:
+def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: str, aspect_ratio: str, selected_font_style: str = "chunky_display", image_model: str = DEFAULT_IMAGE_MODEL, image_size: str = "", image_quality: str = "high", prompt_override: str = "", image_urls_override: List[str] = None, motion_graphic: bool = False) -> Dict:
     target_time = parse_keyframe_to_seconds(scene.get('keyframe_time', '00:00'))
     print(f"\n[EXTRACTING] Scene {scene.get('scene_number')} -> Exact Keyframe Target: {target_time:.2f}s")
     
@@ -258,10 +296,21 @@ def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: 
     # --- SURGICAL FIX: Only evaluate spoken_dialogue for text triggers ---
     scene_dialogue = scene.get("spoken_dialogue", "").strip()
     
-    trigger_words = ["text", "word", "typography", "font", "interface", "logo", "title card", "displaying"]
+    # Only words that unambiguously ask for RENDERED TEXT. Removed "interface",
+    # "logo" and "displaying": an ordinary shot like "a laptop displaying a
+    # dashboard interface" is not a request for typography, but used to force it.
+    trigger_words = ["text", "typography", "font", "title card", "caption", "subtitle", "lettering"]
     has_explicit_text_request = any(word in raw_visual_text.lower() for word in trigger_words)
-    has_spoken_voiceover = bool(scene_dialogue and scene_dialogue not in ["", "..."])
-    is_text_banned = not (has_explicit_text_request or has_spoken_voiceover)
+    # Motion graphics carry design copy in on_screen_text instead of dialogue.
+    on_screen_text = (scene.get("on_screen_text") or "").strip()
+    if motion_graphic and on_screen_text:
+        scene_dialogue = on_screen_text
+    # Music/SFX descriptions must never count as voiceover (they'd become on-image text).
+    has_spoken_voiceover = bool(_speech_only(scene_dialogue))
+    # The user's typography choice is authoritative: picking "No Text" bans text
+    # even for scenes that have dialogue. Previously this was ignored entirely.
+    user_wants_no_text = (selected_font_style == "NO_TEXT")
+    is_text_banned = user_wants_no_text or not (has_explicit_text_request or has_spoken_voiceover)
 
     pre_mapped_text = raw_visual_text
     # --- ASSET MAPPING (1-BASED, AUTHORITATIVE) ---
@@ -310,7 +359,24 @@ def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: 
     sterilized_phrase = _compile_diffusion_prompt(pre_mapped_text, is_text_banned)
 
     has_assets = len(image_urls) > 1  # >1 means real user assets are attached
-    if has_assets:
+
+    if motion_graphic:
+        # STYLE COMES FROM THE REFERENCE, NOT FROM US. Do not inject any aesthetic
+        # vocabulary here: words like "flat", "vector" or "graphic shapes" push the
+        # model toward cartoon illustration regardless of what the reference ad
+        # actually looks like. #image1 is the reference keyframe, so it carries the
+        # real art direction (3D, photoreal, dark, glossy, etc.) — we only describe
+        # WHAT changes, and let the reference dictate HOW it looks.
+        asset_clause = (" Composite the provided brand assets into the layout, matching the "
+                        "existing rendering style, lighting and materials."
+                        if has_assets else "")
+        design_prompt = (
+            f"Match the exact visual style, rendering technique, materials, lighting, colour "
+            f"palette and level of realism of #image1. {sterilized_phrase}{asset_clause} "
+            f"Keep the same art direction as #image1 — do not switch to a different style, "
+            f"and do not simplify it into flat illustration or cartoon artwork."
+        )
+    elif has_assets:
         # The keyframe (#image1) guides composition/lighting, but the ASSET is the
         # true subject. Phrase it so the model builds the described scene around the
         # asset and uses #image1 as a layout/style reference — NOT as a rigid
@@ -331,14 +397,23 @@ def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: 
 
     if not is_text_banned:
         font_prompt_modifier = TYPOGRAPHY_PRESETS.get(selected_font_style, TYPOGRAPHY_PRESETS["chunky_display"])
-        # --- SURGICAL FIX: Inject only the spoken dialogue as typography ---
-        text_content = scene_dialogue if has_spoken_voiceover else ""
+        # Only ever render actual SPOKEN words as typography — never a music cue.
+        text_content = _speech_only(scene_dialogue) if has_spoken_voiceover else ""
         if text_content:
             design_prompt += f', featuring integrated typography reading exactly "{text_content}" styled in {font_prompt_modifier}'
         else:
             design_prompt += f', styled with integrated {font_prompt_modifier}'
+    else:
+        # Text is banned — actually SEND the no-text instruction. Previously the
+        # NO_TEXT preset was unreachable dead code, so nothing told the model to
+        # keep the frame clean and it happily rendered text anyway.
+        design_prompt += f", {TYPOGRAPHY_PRESETS['NO_TEXT']}"
 
-    design_prompt += ", cinematic lighting, professional composition, clean"
+    # For motion graphics the look is inherited from the reference keyframe, so add
+    # only quality words — no style words that would override that art direction.
+    design_prompt += (", high production value, professional composition, crisp and clean"
+                      if motion_graphic
+                      else ", cinematic lighting, professional composition, clean")
 
     # --- Build model-specific args ---
     model_cfg = IMAGE_MODELS.get(image_model, IMAGE_MODELS[DEFAULT_IMAGE_MODEL])
@@ -358,31 +433,51 @@ def _process_single_scene(scene: Dict, asset_urls: List[str], local_video_path: 
     else:
         # Nano Banana: aspect_ratio + denoising strength (unchanged behavior).
         # LOW strength preserves the keyframe; higher gives room to swap assets in.
-        edit_strength = 0.55 if has_assets else 0.25
+        # Motion graphics must REPLACE the photographic keyframe with a designed
+        # composition, so it needs far more freedom than a live-action edit where
+        # the frame is being preserved.
+        edit_strength = 0.85 if motion_graphic else (0.55 if has_assets else 0.25)
         args = {
             "prompt": design_prompt,
             "image_urls": image_urls,
             "aspect_ratio": aspect_ratio,
             "strength": edit_strength,
-            "negative_prompt": "ugly, deformed, blurry text, double letters, messy layout, generic sans-serif, standard subtitle boxes, hallucinated faces, overprocessed, deep-fried AI, cluttered, noisy"
+            "negative_prompt": ("text, letters, words, typography, captions, subtitles, watermark, "
+                                if is_text_banned else "") +
+                               "ugly, deformed, blurry text, double letters, messy layout, generic sans-serif, standard subtitle boxes, hallucinated faces, overprocessed, deep-fried AI, cluttered, noisy"
         }
         payload_note = f"{model_cfg['label']} | aspect={aspect_ratio} strength={edit_strength}"
 
+    # --- OPTIONAL USER OVERRIDES (additive; no-ops unless the user edited them
+    # in the "inspect inputs" panel). Everything above is unchanged. ---
+    if prompt_override and prompt_override.strip():
+        args["prompt"] = prompt_override.strip()
+    if image_urls_override:
+        _cleaned = [u.strip() for u in image_urls_override if u and u.strip()]
+        if _cleaned:
+            args["image_urls"] = _cleaned
+
     try:
-        print(f"      [SCENE {scene.get('scene_number')} PAYLOAD] {payload_note} | Typography: {selected_font_style} | Prompt: {design_prompt}")
+        print(f"      [SCENE {scene.get('scene_number')} PAYLOAD] {payload_note} | Typography: {selected_font_style} | Prompt: {args['prompt']}")
         result = fal_client.subscribe(endpoint, arguments=args)
         if result and "images" in result:
             scene["generated_image_url"] = result["images"][0]["url"]
+            scene["image_error"] = None
         else:
             scene["generated_image_url"] = None
+            scene["image_error"] = "Model returned no image (often a silent content-policy rejection)."
     except Exception as e:
         print(f"Error on Scene {scene.get('scene_number')}: {e}")
         scene["generated_image_url"] = None
+        scene["image_error"] = str(e) or e.__class__.__name__
 
     scene["visual_prompt_sterilized"] = sterilized_phrase
+    # Persist the EXACT payload sent so the UI can show what produced this frame.
+    scene["image_endpoint"] = endpoint
+    scene["image_args"] = args
     return scene
 
-def generate_storyboard_frames(extracted_text: str, uploaded_assets: List[str], local_video_path: str, aspect_ratio: str = "9:16", selected_font_style: str = "chunky_display", image_model: str = DEFAULT_IMAGE_MODEL, image_size: str = "", image_quality: str = "high") -> List[Dict]:
+def generate_storyboard_frames(extracted_text: str, uploaded_assets: List[str], local_video_path: str, aspect_ratio: str = "9:16", selected_font_style: str = "chunky_display", image_model: str = DEFAULT_IMAGE_MODEL, image_size: str = "", image_quality: str = "high", motion_graphic: bool = False) -> List[Dict]:
     scenes = parse_extracted_scenes(extracted_text)
     if not scenes:
         raise ValueError("Could not parse scenes. Check VLM Agent output format.")
@@ -396,9 +491,9 @@ def generate_storyboard_frames(extracted_text: str, uploaded_assets: List[str], 
 
     storyboard_results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {executor.submit(_process_single_scene, scene, asset_urls, local_video_path, aspect_ratio, selected_font_style, image_model, image_size, image_quality): scene for scene in scenes}
+        futures = {executor.submit(_process_single_scene, scene, asset_urls, local_video_path, aspect_ratio, selected_font_style, image_model, image_size, image_quality, "", None, motion_graphic): scene for scene in scenes}
         for future in concurrent.futures.as_completed(futures):
             storyboard_results.append(future.result())
-            
+
     storyboard_results.sort(key=lambda x: int(x["scene_number"]))
     return storyboard_results

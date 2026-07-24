@@ -10,7 +10,7 @@ from app.new_pipeline.uploader import upload_video
 from app.new_pipeline.model_registry import MODELS
 from app.new_pipeline.cost_tracker import CostTracker
 
-from app.new_pipeline.analyzer import analyze_and_extract_scenes
+from app.new_pipeline.analyzer import analyze_and_extract_scenes, is_motion_graphic
 from app.new_pipeline.frame_designer import generate_storyboard_frames, _process_single_scene, parse_extracted_scenes, IMAGE_MODELS, DEFAULT_IMAGE_MODEL
 from app.new_pipeline.generator import generate_final_video, regenerate_single_segment
 
@@ -61,8 +61,16 @@ def render_asset_list(uploaded_assets):
     return gr.update(value=f"**Your assets** (refer to these numbers in the Creative Directive):\n\n{rows}", visible=True)
 
 def step1_download(url):
+    """Fetch the reference from a URL (cached — only downloads once per link)."""
+    if not url or not url.strip():
+        raise gr.Error("Paste a reference URL, or upload/drag a local video into the Source Video box.")
     local_path = download_video(url)
     return local_path, gr.update(interactive=True)
+
+def on_source_ready(local_video_path):
+    """Enable the Analyze step whenever a source video is present — whether it was
+    fetched from a URL or loaded directly from the user's machine."""
+    return gr.update(interactive=bool(local_video_path))
 
 def step2_extract_scenes(api_key, local_video_path, creative_directive, target_duration, production_type, uploaded_assets):
     set_fal_key(api_key)
@@ -94,13 +102,14 @@ def step2_extract_scenes(api_key, local_video_path, creative_directive, target_d
     except Exception as e:
         return f"PIPELINE ERROR: {str(e)}"
 
-def step3_generate_storyboard(api_key, edited_prompts, uploaded_assets, local_video_path, aspect_ratio, font_style, image_model, image_size, image_quality):
+def step3_generate_storyboard(api_key, edited_prompts, uploaded_assets, local_video_path, aspect_ratio, font_style, image_model, image_size, image_quality, production_type=""):
     set_fal_key(api_key)
     if not edited_prompts:
         return [], None
     asset_paths = uploaded_assets if uploaded_assets else []
     try:
-        storyboard_data = generate_storyboard_frames(edited_prompts, asset_paths, local_video_path, aspect_ratio, font_style, image_model, image_size, image_quality)
+        mg = is_motion_graphic(production_type)
+        storyboard_data = generate_storyboard_frames(edited_prompts, asset_paths, local_video_path, aspect_ratio, font_style, image_model, image_size, image_quality, motion_graphic=mg)
 
         # Stamp the image-gen settings onto each frame so the final cost estimate
         # (step 4) can price the images with the actual model/size/quality used.
@@ -121,25 +130,46 @@ def step3_generate_storyboard(api_key, edited_prompts, uploaded_assets, local_vi
         print(f"Storyboard compilation error: {str(e)}")
         return [], None
 
-def step3_regenerate_single(api_key, edited_prompts, scene_num_to_regen, uploaded_assets, local_video_path, aspect_ratio, font_style, current_storyboard_state, image_model, image_size, image_quality):
+def _gallery_to_urls(gallery, uploader):
+    """Turn a gr.Gallery value into a flat list of image URLs, uploading any
+    freshly-added LOCAL files (the '+' tiles) to fal so they get a usable URL."""
+    urls = []
+    for item in (gallery or []):
+        # gr.Gallery yields (path_or_url, caption) tuples, or bare paths/dicts.
+        src = item[0] if isinstance(item, (list, tuple)) else item
+        if isinstance(src, dict):
+            src = src.get("path") or src.get("url") or src.get("name") or ""
+        if not src:
+            continue
+        urls.append(src if str(src).startswith("http") else uploader(src))
+    return urls
+
+def step3_regenerate_single(api_key, edited_prompts, scene_num_to_regen, uploaded_assets, local_video_path, aspect_ratio, font_style, current_storyboard_state, image_model, image_size, image_quality, frame_prompt_override="", frame_images_gallery=None, production_type=""):
     set_fal_key(api_key)
     if not current_storyboard_state or not scene_num_to_regen:
         return gr.update(), current_storyboard_state
     try:
         fresh_scenes = parse_extracted_scenes(edited_prompts)
         target_scene_data = next((s for s in fresh_scenes if str(s["scene_number"]) == str(scene_num_to_regen)), None)
-        
+
         if not target_scene_data:
             gr.Warning(f"Scene {scene_num_to_regen} not found in the text prompts panel.")
             return gr.update(), current_storyboard_state
-            
+
         asset_urls = []
         if uploaded_assets:
             for asset in uploaded_assets:
                 url = upload_video(asset) if not asset.startswith("http") else asset
                 asset_urls.append(url)
-                
-        updated_scene = _process_single_scene(target_scene_data, asset_urls, local_video_path, aspect_ratio, font_style, image_model, image_size, image_quality)
+
+        # The inspect gallery is the source of truth for this scene's input images.
+        # Whatever the user left in it (originals + any '+'-added tiles, in order)
+        # becomes image_urls, so a newly-added image is the next #imageN.
+        images_override = _gallery_to_urls(frame_images_gallery, upload_video) or None
+
+        updated_scene = _process_single_scene(target_scene_data, asset_urls, local_video_path, aspect_ratio, font_style, image_model, image_size, image_quality,
+                                              prompt_override=frame_prompt_override, image_urls_override=images_override,
+                                              motion_graphic=is_motion_graphic(production_type))
         
         for idx, old_scene in enumerate(current_storyboard_state):
             if str(old_scene["scene_number"]) == str(scene_num_to_regen):
@@ -158,6 +188,78 @@ def step3_regenerate_single(api_key, edited_prompts, scene_num_to_regen, uploade
     except Exception as e:
         print(f"Single scene regeneration crash: {e}")
         return gr.update(), current_storyboard_state
+
+def _payload_summary(args: dict, skip: tuple, header_lines: list) -> str:
+    """Render everything in a sent payload except the fields already shown in
+    their own editable boxes."""
+    lines = list(header_lines)
+    for k, v in (args or {}).items():
+        if k in skip:
+            continue
+        text = str(v)
+        if len(text) > 300:
+            text = text[:300] + "…"
+        lines.append(f"**{k}:** `{text}`")
+    return "\n\n".join(lines)
+
+def load_frame_inputs(storyboard_state, scene_number):
+    """Show the EXACT inputs that produced a storyboard frame.
+
+    Returns the editable prompt, a GALLERY of the input images each captioned
+    #image1..#imageN (so the user sees the actual pictures, not URLs), a hint
+    telling them what number a newly-uploaded image will take, and a settings
+    summary.
+    """
+    empty = (gr.update(), gr.update(), gr.update(), gr.update())
+    if not storyboard_state:
+        gr.Warning("No storyboard yet — render the storyboard first.")
+        return empty
+    scene = next((s for s in storyboard_state
+                  if str(s.get("scene_number")) == str(scene_number)), None)
+    if not scene:
+        gr.Warning(f"Scene {scene_number} not found.")
+        return empty
+
+    args = scene.get("image_args") or {}
+    if not args:
+        return ("", [],
+                "_No stored inputs for this scene. Re-render the storyboard once so the inputs get recorded._",
+                "")
+
+    urls = args.get("image_urls", []) or []
+    # Caption each existing input image with the tag the prompt uses to reference it.
+    gallery = [(u, f"#image{i}") for i, u in enumerate(urls, start=1)]
+    next_tag = f"#image{len(urls) + 1}"
+    hint = (f"Above are the images sent for this scene. Any image you upload below "
+            f"becomes **{next_tag}** — reference it in the prompt as `{next_tag}`.")
+
+    header = [f"**Endpoint:** `{scene.get('image_endpoint', 'n/a')}`"]
+    if scene.get("image_error"):
+        header.append(f"**⚠ Last error:** {scene['image_error']}")
+    return (args.get("prompt", ""), gallery, hint,
+            _payload_summary(args, ("prompt", "image_urls"), header))
+
+def load_segment_inputs(segments_state, scene_number):
+    """Show the EXACT payload that produced a video segment, loaded into the
+    existing override boxes."""
+    if not segments_state:
+        gr.Warning("No rendered segments yet — run 'Render Final Commercial' first.")
+        return gr.update(), gr.update(), gr.update()
+    seg = next((s for s in segments_state
+                if str(s.get("scene_number")) == str(scene_number)
+                or str(s.get("idx", -1) + 1) == str(scene_number)), None)
+    if not seg:
+        gr.Warning(f"Segment {scene_number} not found.")
+        return gr.update(), gr.update(), gr.update()
+
+    args = seg.get("args") or {}
+    header = [f"**Endpoint:** `{seg.get('endpoint', 'n/a')}`",
+              f"**Status:** `{seg.get('status', 'n/a')}`"]
+    if seg.get("error"):
+        header.append(f"**⚠ Error:** {seg['error']}")
+    img = args.get("image_url", "") or (args.get("image_urls") or [""])[0]
+    return (args.get("prompt", ""), img,
+            _payload_summary(args, ("prompt", "image_url", "image_urls"), header))
 
 def _format_cost(tracker):
     cost = tracker.total()
@@ -193,7 +295,13 @@ def step4_generate_final(api_key, storyboard_frames, final_instructions, model_c
         report = f"{result['status_report']}\n\n{_format_cost(tracker)}"
         # Pre-select the first failed scene in the re-render box, if any.
         failed = result.get("failed_scene_numbers") or []
-        seg_choice = gr.update(value=failed[0]) if failed else gr.update()
+        # gr.Number requires an int; scene_number may be a string -> round() crashes.
+        seg_choice = gr.update()
+        if failed:
+            try:
+                seg_choice = gr.update(value=int(failed[0]))
+            except (TypeError, ValueError):
+                seg_choice = gr.update()
         return result["final_video_path"], report, result["segments"], seg_choice
     except Exception as e:
         return None, f"Generation Failed: {str(e)}", None, gr.update()
@@ -239,7 +347,9 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
                     gr.Markdown("### 📥 Source Material")
                     ad_url = gr.Textbox(label="Reference Ad URL", placeholder="Paste an inspiration video link…", show_label=False)
                     btn_download = gr.Button("Fetch Source", variant="secondary")
-                    preview_video = gr.Video(label="Source Video", height=300)
+                    gr.Markdown("_…or drag & drop / upload a local video below._")
+                    # gr.Video accepts a direct upload too — either path fills this box.
+                    preview_video = gr.Video(label="Source Video (paste a URL above, or upload here)", height=300)
 
                     gr.Markdown("### ⚙️ Production Settings")
                     # (label, value): values stay prefix-free so downstream checks
@@ -320,6 +430,17 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
                     gr.Markdown("---")
                     gr.Markdown("### 🔁 Re-render one scene")
                     scene_num_input = gr.Number(label="Scene number", precision=0, value=1)
+                    btn_load_frame_inputs = gr.Button("🔍 Load inputs for this scene", variant="secondary")
+                    frame_info = gr.Markdown(value="_Load a scene to see exactly what was sent to the image model._")
+                    frame_prompt_edit = gr.Textbox(label="Prompt sent (edit to change it)", lines=6,
+                                                   placeholder="Click 'Load inputs' to see the actual prompt used.")
+                    # Input images as labelled thumbnails (#image1, #image2, …).
+                    # interactive=True adds the built-in "+" upload tile inside the
+                    # gallery — a dropped image becomes the next #imageN.
+                    frame_images_gallery = gr.Gallery(label="Input images (use + to add the next #image)",
+                                                      columns=3, height=160, object_fit="contain",
+                                                      interactive=True)
+                    frame_extra_hint = gr.Markdown(value="")
                     btn_regen_single = gr.Button("Re-render this scene", variant="secondary")
 
                 with gr.Column(scale=3):
@@ -344,6 +465,8 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
                         "then re-render just that segment — other scenes are kept."
                     )
                     rerender_scene_num = gr.Number(label="Scene # to re-render", precision=0, value=1)
+                    btn_load_segment_inputs = gr.Button("🔍 Load inputs for this segment", variant="secondary")
+                    segment_info = gr.Markdown(value="_Load a segment to see exactly what was sent to the video model._")
                     rerender_prompt = gr.Textbox(label="Corrected Prompt (optional)", lines=3,
                                                  placeholder="Leave blank to reuse the original prompt.")
                     rerender_image_url = gr.Textbox(label="Replacement Base Image URL (optional)",
@@ -355,10 +478,14 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
 
     # WIRING
     btn_download.click(
-        fn=step1_download, 
-        inputs=[ad_url], 
+        fn=step1_download,
+        inputs=[ad_url],
         outputs=[preview_video, btn_extract]
     )
+
+    # Loading a local video directly (upload or drag-drop) also readies the flow.
+    preview_video.upload(fn=on_source_ready, inputs=[preview_video], outputs=[btn_extract])
+    preview_video.change(fn=on_source_ready, inputs=[preview_video], outputs=[btn_extract])
     
     # Keep the numbered asset list in sync so the user always knows which upload
     # is "Asset 1", "Asset 2", … before writing the Creative Directive.
@@ -376,13 +503,20 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
     
     btn_generate_storyboard.click(
         fn=step3_generate_storyboard,
-        inputs=[api_key_input, extracted_prompts, uploaded_assets, preview_video, aspect_ratio_choice, font_style_choice, image_model_choice, image_size_choice, image_quality_choice],
+        inputs=[api_key_input, extracted_prompts, uploaded_assets, preview_video, aspect_ratio_choice, font_style_choice, image_model_choice, image_size_choice, image_quality_choice, production_type],
         outputs=[storyboard_gallery, state_storyboard_frames]
+    )
+
+    # Inspect: load the prompt + labelled input-image thumbnails for this scene.
+    btn_load_frame_inputs.click(
+        fn=load_frame_inputs,
+        inputs=[state_storyboard_frames, scene_num_input],
+        outputs=[frame_prompt_edit, frame_images_gallery, frame_extra_hint, frame_info]
     )
 
     btn_regen_single.click(
         fn=step3_regenerate_single,
-        inputs=[api_key_input, extracted_prompts, scene_num_input, uploaded_assets, preview_video, aspect_ratio_choice, font_style_choice, state_storyboard_frames, image_model_choice, image_size_choice, image_quality_choice],
+        inputs=[api_key_input, extracted_prompts, scene_num_input, uploaded_assets, preview_video, aspect_ratio_choice, font_style_choice, state_storyboard_frames, image_model_choice, image_size_choice, image_quality_choice, frame_prompt_edit, frame_images_gallery, production_type],
         outputs=[storyboard_gallery, state_storyboard_frames]
     )
     
@@ -390,6 +524,13 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
         fn=step4_generate_final,
         inputs=[api_key_input, state_storyboard_frames, final_instructions, model_choice, duration_choice, aspect_ratio_choice, resolution_choice, extracted_prompts, production_type],
         outputs=[final_video, cost_output, state_video_segments, rerender_scene_num]
+    )
+
+    # Inspect: load the exact payload that produced this segment into the boxes above.
+    btn_load_segment_inputs.click(
+        fn=load_segment_inputs,
+        inputs=[state_video_segments, rerender_scene_num],
+        outputs=[rerender_prompt, rerender_image_url, segment_info]
     )
 
     btn_rerender_segment.click(
