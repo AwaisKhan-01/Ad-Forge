@@ -12,69 +12,94 @@
   <input id="apiKey" type="password" placeholder="FAL API key" autocomplete="off">
 </header>
 
-<nav id="stepper">
-  <button class="step active" data-step="1"><span>1</span> Reference</button>
-  <button class="step" data-step="2"><span>2</span> Blueprint</button>
-  <button class="step" data-step="3"><span>3</span> Storyboard</button>
-  <button class="step" data-step="4"><span>4</span> Render</button>
-</nav>
+<!-- Always-visible pipeline map: the user sees the whole flow at a glance. -->
+<div id="flowbar">
+  <div class="fstep" data-s="1"><i></i>Reference</div><em>→</em>
+  <div class="fstep" data-s="2"><i></i>Blueprint</div><em>→</em>
+  <div class="fstep" data-s="3"><i></i>Storyboard</div><em>→</em>
+  <div class="fstep" data-s="4"><i></i>Film</div>
+</div>
 
 <main>
-  <!-- STEP 1 · Reference & assets -->
-  <section id="panel-1" class="panel show">
-    <div class="card">
-      <h2>Reference ad</h2>
-      <p class="hint">Paste an Instagram/TikTok link, or upload a local file. Repeat links load instantly from cache.</p>
-      <div class="row">
-        <input id="refUrl" placeholder="https://www.instagram.com/reel/…">
-        <button id="btnRefUrl" class="primary">Load</button>
-        <label class="upload">Upload<input id="refFile" type="file" accept="video/*" hidden></label>
-      </div>
-      <video id="refPreview" controls hidden></video>
+
+  <!-- ═══════════ 1 · REFERENCE & ASSETS ═══════════ -->
+  <section id="s1" data-status="ready">
+    <div class="shead">
+      <div class="num">1</div>
+      <div><h2>Reference &amp; your brand</h2>
+        <p class="sub">The ad you want to recreate, and the product it should sell instead.</p></div>
+      <span class="chip" id="chip1">Start here</span>
     </div>
-    <div class="card">
-      <h2>Your brand assets</h2>
-      <p class="hint">Product shots, logo, packaging. They become <code>Asset 1…N</code> — the blueprint swaps them in for the reference's product.</p>
-      <div class="row">
-        <label class="upload">+ Add asset<input id="assetFile" type="file" accept="image/*" hidden></label>
-        <button id="btnAssetsClear" class="ghost">Clear</button>
+    <div class="grid2">
+      <div class="card">
+        <h3>Reference ad</h3>
+        <p class="hint">Instagram / TikTok link, or a local file. Repeat links load from cache.</p>
+        <div class="row">
+          <input id="refUrl" placeholder="https://www.instagram.com/reel/…">
+          <button id="btnRefUrl" class="primary">Load</button>
+          <label class="upload">Upload<input id="refFile" type="file" accept="video/*" hidden></label>
+        </div>
+        <div id="refZone" class="dropzone"><span>Reference preview appears here</span></div>
+        <video id="refPreview" controls hidden></video>
       </div>
-      <div id="assetStrip" class="strip"></div>
+      <div class="card">
+        <h3>Brand assets <span class="opt">optional</span></h3>
+        <p class="hint">Product shots, logo, packaging — they become <code>Asset 1…N</code> and replace
+          the reference's product in every scene.</p>
+        <div class="row">
+          <label class="upload">+ Add asset<input id="assetFile" type="file" accept="image/*" hidden></label>
+          <button id="btnAssetsClear" class="ghost">Clear</button>
+        </div>
+        <div id="assetStrip" class="strip">
+          <div class="dropzone slim"><span>Uploaded assets appear here as Asset 1, Asset 2…</span></div>
+        </div>
+      </div>
     </div>
   </section>
 
-  <!-- STEP 2 · Blueprint -->
-  <section id="panel-2" class="panel">
+  <!-- ═══════════ 2 · BLUEPRINT ═══════════ -->
+  <section id="s2" data-status="wait">
+    <div class="shead">
+      <div class="num">2</div>
+      <div><h2>Blueprint</h2>
+        <p class="sub">Tell the director what this ad is for. It watches the reference and writes your scene-by-scene plan.</p></div>
+      <span class="chip" id="chip2">Waiting for a reference</span>
+    </div>
     <div class="card">
-      <h2>Campaign blueprint</h2>
       <div class="grid2">
         <label>Your product / directive
-          <textarea id="directive" rows="3" placeholder="E.g. Same ad, but for NovaBrew cold coffee — keep the pacing, swap every product shot for ours."></textarea>
+          <textarea id="directive" rows="3"
+            placeholder="E.g. Same ad, but for NovaBrew cold coffee — keep the pacing, swap every product shot for ours."></textarea>
         </label>
-        <div>
+        <div class="stack">
           <label>Target length <output id="durOut">15s</output>
-            <input id="duration" type="range" min="6" max="60" step="1" value="15">
-          </label>
+            <input id="duration" type="range" min="6" max="60" step="1" value="15"></label>
           <label>Format
             <select id="prodType">
               <option value="Narrative Ad (On-Screen Actor / Dialogue)">On-screen actor / dialogue</option>
               <option value="Narrative Ad (Voiceover focused)">Voiceover focused</option>
               <option value="Narrative Ad (No Voiceover - Text/Music focused)">No voiceover — action / music</option>
               <option value="Motion Graphic (SFX & Music focused)">Motion graphics</option>
-            </select>
-          </label>
-          <button id="btnAnalyze" class="primary wide">🎬 Direct the blueprint</button>
+            </select></label>
+          <button id="btnAnalyze" class="primary">🎬 Direct the blueprint</button>
         </div>
       </div>
       <div id="campaignCard" class="campaign" hidden></div>
-      <div id="sceneList" class="scenes"></div>
+      <div id="sceneList" class="scenes">
+        <div class="placeholder">Your scene-by-scene plan appears here — every scene editable before a cent is spent.</div>
+      </div>
     </div>
   </section>
 
-  <!-- STEP 3 · Storyboard -->
-  <section id="panel-3" class="panel">
+  <!-- ═══════════ 3 · STORYBOARD ═══════════ -->
+  <section id="s3" data-status="wait">
+    <div class="shead">
+      <div class="num">3</div>
+      <div><h2>Storyboard</h2>
+        <p class="sub">One designed frame per scene — reference's style, your product.</p></div>
+      <span class="chip" id="chip3">Waiting for the blueprint</span>
+    </div>
     <div class="card">
-      <h2>Storyboard</h2>
       <div class="row wrap">
         <label>Image model <select id="imgModel"></select></label>
         <label>Aspect <select id="aspect"><option>16:9</option><option>9:16</option><option>1:1</option></select></label>
@@ -90,28 +115,35 @@
           </select></label>
         <button id="btnStoryboard" class="primary">🎨 Generate frames</button>
       </div>
-      <div id="frameGrid" class="frames"></div>
+      <div id="frameGrid" class="frames">
+        <div class="placeholder">Storyboard frames render here in parallel — each tile fills in as its scene finishes.</div>
+      </div>
     </div>
   </section>
 
-  <!-- STEP 4 · Render -->
-  <section id="panel-4" class="panel">
+  <!-- ═══════════ 4 · FILM ═══════════ -->
+  <section id="s4" data-status="wait">
+    <div class="shead">
+      <div class="num">4</div>
+      <div><h2>Film</h2>
+        <p class="sub">Animate the storyboard into the finished commercial.</p></div>
+      <span class="chip" id="chip4">Waiting for the storyboard</span>
+    </div>
     <div class="card">
-      <h2>Final render</h2>
       <div class="row wrap">
         <label>Engine <select id="vidModel"></select></label>
         <label>Resolution <select id="resolution"><option>720p</option><option>480p</option><option>1080p</option></select></label>
-        <label>Budget cap $<input id="budget" type="number" value="2" step="0.5" min="0" style="width:70px"></label>
-        <button id="btnTimeline" class="ghost">⏱ Preview timeline</button>
+        <label>Budget cap $<input id="budget" type="number" value="2" step="0.5" min="0" class="w70"></label>
+        <button id="btnTimeline" class="ghost">⏱ Preview timeline &amp; cost</button>
         <button id="btnRender" class="primary">🎬 Render commercial</button>
       </div>
       <div id="timeline" class="timeline"></div>
       <div id="renderLog" class="log"></div>
       <video id="finalVideo" controls hidden></video>
       <div id="recovery" class="recovery" hidden>
-        <h3>🩹 Fix one segment</h3>
+        <h3>🩹 Fix one segment <span class="opt">the rest of the ad is kept — you only re-pay this clip</span></h3>
         <div class="row wrap">
-          <input id="fixScene" type="number" min="1" value="1" style="width:70px">
+          <input id="fixScene" type="number" min="1" value="1" class="w70">
           <input id="fixPrompt" placeholder="Corrected prompt (optional)">
           <input id="fixImage" placeholder="Replacement frame URL (optional)">
           <button id="btnFix" class="ghost">Re-render segment</button>
@@ -119,8 +151,8 @@
       </div>
     </div>
   </section>
-</main>
 
+</main>
 <div id="toast"></div>
 <script src="/app.js"></script>
 </body>

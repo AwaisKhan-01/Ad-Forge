@@ -110,9 +110,11 @@ def analyze_reference(video_url: str, directive: str, target_duration: int,
         nscenes=nscenes,
         mg_rules=_MG_RULES if mg else "",
     )
+    # Schema-verified contract: the router wants video_urls as a LIST, and
+    # gemini-3.1-pro requires reasoning=true ("mandatory ... cannot be disabled").
     result = fal_client.subscribe(VLM_ENDPOINT, arguments={
-        "video_url": video_url, "prompt": prompt, "model": VLM_MODEL,
-        "temperature": 0.4,
+        "video_urls": [video_url], "prompt": prompt, "model": VLM_MODEL,
+        "reasoning": True, "temperature": 0.4,
     })
     raw = result.get("output", "")
     try:
