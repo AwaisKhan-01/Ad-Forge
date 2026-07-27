@@ -96,10 +96,19 @@ def _set_key(key: str):
 
 
 # ------------------------------------------------------------------ reference
+def _reset_downstream():
+    """A new reference starts a new project: stale blueprint/storyboard/render
+    state must not leak into it (assets are kept — they were just uploaded)."""
+    for k in ("campaign", "scenes", "segments", "final_video", "target_duration"):
+        STATE.pop(k, None)
+    STATE["scenes"], STATE["segments"] = [], []
+
+
 @app.post("/api/reference/url")
 def reference_from_url(req: RefRequest):
     path = download_video(req.url)
     STATE["reference_path"] = path
+    _reset_downstream()
     _persist()
     return {"path": path, "preview": f"/media/{os.path.basename(path)}"}
 
@@ -111,6 +120,7 @@ async def reference_upload(file: UploadFile = File(...)):
     with open(path, "wb") as f:
         shutil.copyfileobj(file.file, f)
     STATE["reference_path"] = path
+    _reset_downstream()
     _persist()
     return {"path": path, "preview": f"/media/{os.path.basename(path)}"}
 
@@ -316,8 +326,12 @@ def models():
 
 @app.get("/api/state")
 def state():
-    return {"reference": bool(STATE.get("reference_path")),
+    ref = STATE.get("reference_path")
+    return {"reference": bool(ref),
+            "reference_preview": f"/media/{os.path.basename(ref)}" if ref else None,
             "assets": len(STATE.get("assets", [])),
+            "asset_previews": [f"/media/{os.path.basename(p)}"
+                               for p in STATE.get("assets", [])],
             "campaign": STATE.get("campaign"),
             "scenes": STATE.get("scenes", []),
             "has_segments": bool(STATE.get("segments")),

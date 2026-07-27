@@ -222,7 +222,34 @@ $("#btnFix").onclick = async () => {
   } catch (e) { toast(e.message, true); }
 };
 
-/* ================= boot: models + session restore ================= */
+/* ================= history: previous session restores ONLY on click ========= */
+function restoreSession(st) {
+  if (st.reference_preview) {
+    $("#refZone").hidden = true;
+    $("#refPreview").src = st.reference_preview; $("#refPreview").hidden = false;
+    setStatus(1, "done"); setStatus(2, "ready");
+  }
+  if (st.asset_previews?.length) {
+    $("#assetStrip").innerHTML = st.asset_previews.map((p, i) =>
+      `<div class="asset"><img src="${p}"><span class="tag">Asset ${i + 1}</span></div>`).join("");
+  }
+  if (st.campaign) { renderCampaign(st.campaign); setStatus(2, "done"); setStatus(3, "ready"); }
+  if (st.scenes?.length) {
+    renderScenes(st.scenes);
+    const withImg = st.scenes.filter((s) => s.generated_image_url);
+    if (withImg.length) {
+      $("#frameGrid").innerHTML = withImg.map((s) =>
+        `<div class="frame"><img src="${s.generated_image_url}">
+         <div class="cap">Scene ${s.scene_number}</div></div>`).join("");
+      setStatus(3, "done"); setStatus(4, "ready");
+    }
+  }
+  if (st.final) { $("#finalVideo").src = st.final; $("#finalVideo").hidden = false; setStatus(4, "done"); }
+  toast("Previous session restored");
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+/* ================= boot: models; history offered, never forced ============== */
 (async () => {
   try {
     const m = await api("/api/models");
@@ -232,19 +259,11 @@ $("#btnFix").onclick = async () => {
     $("#imgModel").innerHTML = Object.entries(m.image)
       .map(([k, v]) => `<option value="${k}" ${k === m.defaults.image ? "selected" : ""}>${v.label}</option>`).join("");
     const st = await api("/api/state");
-    if (st.reference) { setStatus(1, "done"); setStatus(2, "ready"); }
-    if (st.campaign) { renderCampaign(st.campaign); setStatus(2, "done"); setStatus(3, "ready"); }
-    if (st.scenes?.length) {
-      renderScenes(st.scenes);
-      const withImg = st.scenes.filter((s) => s.generated_image_url);
-      if (withImg.length) {
-        $("#frameGrid").innerHTML = withImg.map((s) =>
-          `<div class="frame"><img src="${s.generated_image_url}">
-           <div class="cap">Scene ${s.scene_number}</div></div>`).join("");
-        setStatus(3, "done"); setStatus(4, "ready");
-        toast(`Restored previous session (${withImg.length} frames)`);
-      }
+    // Fresh canvas by default. If a previous run exists, offer it — one click.
+    if (st.campaign || st.scenes?.length || st.final || st.reference) {
+      const b = $("#btnHistory");
+      b.hidden = false;
+      b.onclick = () => { restoreSession(st); b.hidden = true; };
     }
-    if (st.final) { $("#finalVideo").src = st.final; $("#finalVideo").hidden = false; setStatus(4, "done"); }
   } catch { /* fresh session */ }
 })();
