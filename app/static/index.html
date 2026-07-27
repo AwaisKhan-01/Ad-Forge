@@ -106,17 +106,53 @@
       <div class="row wrap">
         <label>Image model <select id="imgModel"></select></label>
         <label>Aspect <select id="aspect"><option>16:9</option><option>9:16</option><option>1:1</option></select></label>
-        <label>Typography
-          <select id="fontStyle">
-            <option value="KEEP_EXISTING_TEXT">Keep existing text (reference's fonts)</option>
-            <option value="NO_TEXT">No text at all</option>
-            <option value="chunky_display" selected>Chunky display</option>
-            <option value="elegant_script_mix">Elegant script</option>
-            <option value="streetwear_graffiti">Streetwear graffiti</option>
-            <option value="brutalist_geometric">Brutalist geometric</option>
-            <option value="retro_3d_editorial">Retro 3D editorial</option>
-          </select></label>
         <button id="btnStoryboard" class="primary">🎨 Generate frames</button>
+      </div>
+
+      <h3 class="typo-head">Typography <span class="opt">— how on-screen text will look</span></h3>
+      <div id="fontGrid" class="fontgrid">
+        <button class="font-tile special" data-font="KEEP_EXISTING_TEXT">
+          <div class="spec keepspec">Aa<small>↺</small></div>
+          <div class="fname">Original fonts</div>
+          <div class="fdesc">keep the reference's own text</div>
+        </button>
+        <button class="font-tile special" data-font="NO_TEXT">
+          <div class="spec nonespec">∅</div>
+          <div class="fname">No text</div>
+          <div class="fdesc">remove all lettering</div>
+        </button>
+        <button class="font-tile" data-font="clean_sans">
+          <div class="spec s-clean">Clean &amp; Simple</div>
+          <div class="fname">Clean sans</div>
+        </button>
+        <button class="font-tile" data-font="minimal_serif">
+          <div class="spec s-serif">Timeless</div>
+          <div class="fname">Minimal serif</div>
+        </button>
+        <button class="font-tile" data-font="handwritten_casual">
+          <div class="spec s-hand">hey there!</div>
+          <div class="fname">Handwritten</div>
+        </button>
+        <button class="font-tile" data-font="chunky_display">
+          <div class="spec s-chunky">BEAUTIFUL<br>FREAK</div>
+          <div class="fname">Chunky display</div>
+        </button>
+        <button class="font-tile" data-font="elegant_script_mix">
+          <div class="spec s-script">Believe <span>IN YOUR</span> ability</div>
+          <div class="fname">Elegant script</div>
+        </button>
+        <button class="font-tile" data-font="streetwear_graffiti">
+          <div class="spec s-street">VICE<br>ECHOES</div>
+          <div class="fname">Streetwear</div>
+        </button>
+        <button class="font-tile" data-font="brutalist_geometric">
+          <div class="spec s-brutal">TOK<i>Y</i>O</div>
+          <div class="fname">Brutalist</div>
+        </button>
+        <button class="font-tile" data-font="retro_3d_editorial">
+          <div class="spec s-retro">legacy</div>
+          <div class="fname">Retro 3D</div>
+        </button>
       </div>
       <div id="frameGrid" class="frames">
         <div class="placeholder">Storyboard frames render here in parallel — each tile fills in as its scene finishes.</div>

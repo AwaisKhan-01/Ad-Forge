@@ -23,13 +23,18 @@ from app.new_pipeline.uploader import upload_video
 FRAME_DIR = "outputs/frames"
 
 TYPOGRAPHY_STYLES = {
-    "KEEP_EXISTING_TEXT": None,     # third state: preserve, add nothing
+    "KEEP_EXISTING_TEXT": None,     # third state: preserve the reference's own type
     "NO_TEXT": None,                # ban all text, including original
+    # statement styles
     "chunky_display": "bold chunky hand-drawn display type, thick solid weights",
     "elegant_script_mix": "high-contrast elegant script mixed with clean geometric sans",
     "streetwear_graffiti": "distressed stencil streetwear type, crisp edges",
     "brutalist_geometric": "modular blocky brutalist type, uniform stroke",
     "retro_3d_editorial": "vintage 70s dimensional editorial lettering",
+    # simpler, quieter styles
+    "clean_sans": "clean minimal modern sans-serif, medium weight, generous letter-spacing, understated",
+    "minimal_serif": "refined editorial serif, elegant and quiet, lots of whitespace",
+    "handwritten_casual": "casual handwritten marker lettering, friendly and human",
 }
 
 

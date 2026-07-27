@@ -141,6 +141,17 @@ const pushSceneEdits = async () =>
   window._scenes && api("/api/scenes", { method: "PUT", body: window._scenes });
 
 /* ================= 3 · storyboard ================= */
+/* Typography is picked from visual specimen tiles, not a blind dropdown. */
+window._fontStyle = "chunky_display";
+document.querySelectorAll(".font-tile").forEach((tile) => {
+  if (tile.dataset.font === window._fontStyle) tile.classList.add("sel");
+  tile.addEventListener("click", () => {
+    document.querySelectorAll(".font-tile").forEach((t) => t.classList.remove("sel"));
+    tile.classList.add("sel");
+    window._fontStyle = tile.dataset.font;
+  });
+});
+
 $("#btnStoryboard").onclick = async () => {
   if (!window._scenes?.length) return toast("Direct the blueprint first (step 2)", true);
   try {
@@ -151,7 +162,7 @@ $("#btnStoryboard").onclick = async () => {
          <div class="spin"><div class="loader"></div>scene ${s.scene_number}</div>
          <div class="cap">${s.role_in_story || "rendering…"}</div></div>`).join("");
     const { job_id } = await api("/api/storyboard", { method: "POST", body: {
-      api_key: key(), aspect_ratio: $("#aspect").value, font_style: $("#fontStyle").value,
+      api_key: key(), aspect_ratio: $("#aspect").value, font_style: window._fontStyle,
       image_model: $("#imgModel").value } });
     const result = await follow(job_id, (ev) => {
       if (ev.event !== "frame") return;
