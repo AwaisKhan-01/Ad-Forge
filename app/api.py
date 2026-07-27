@@ -31,9 +31,12 @@ app = FastAPI(title="AdForge Studio", version="2.0")
 UPLOAD_DIR = "uploads"
 
 # ------------------------------------------------------------------ state
-STATE: dict = session_store.load_session().get("extra") or {}
-STATE.setdefault("scenes", session_store.load_session().get("storyboard_frames") or [])
-STATE.setdefault("segments", session_store.load_session().get("video_segments") or [])
+# IMPORTANT: the live session starts EMPTY on every boot. It must never be
+# eagerly pre-filled from the on-disk autosave — a previous project's assets/
+# reference/blueprint would then be silently used by /api/analyze etc. even
+# though the UI shows a blank canvas (restoring is an explicit user action,
+# not something that happens just because the server started).
+STATE: dict = {"scenes": [], "segments": [], "assets": []}
 
 
 def _persist():
@@ -42,6 +45,31 @@ def _persist():
         video_segments=STATE.get("segments"),
         extra={k: v for k, v in STATE.items() if k not in ("scenes", "segments")},
     )
+
+
+def _load_snapshot() -> dict:
+    """Read the on-disk autosave fresh — used ONLY by the explicit restore
+    endpoint, never merged into the live STATE automatically."""
+    saved = session_store.load_session()
+    snap = dict(saved.get("extra") or {})
+    snap["scenes"] = saved.get("storyboard_frames") or []
+    snap["segments"] = saved.get("video_segments") or []
+    snap.setdefault("assets", [])
+    return snap
+
+
+def _state_payload() -> dict:
+    ref = STATE.get("reference_path")
+    return {"reference": bool(ref),
+            "reference_preview": f"/media/{os.path.basename(ref)}" if ref else None,
+            "assets": len(STATE.get("assets", [])),
+            "asset_previews": [f"/media/{os.path.basename(p)}"
+                               for p in STATE.get("assets", [])],
+            "campaign": STATE.get("campaign"),
+            "scenes": STATE.get("scenes", []),
+            "has_segments": bool(STATE.get("segments")),
+            "final": (f"/media/{os.path.basename(STATE['final_video'])}"
+                      if STATE.get("final_video") else None)}
 
 
 # ------------------------------------------------------------------ schemas
@@ -331,17 +359,39 @@ def models():
 
 @app.get("/api/state")
 def state():
-    ref = STATE.get("reference_path")
-    return {"reference": bool(ref),
-            "reference_preview": f"/media/{os.path.basename(ref)}" if ref else None,
-            "assets": len(STATE.get("assets", [])),
-            "asset_previews": [f"/media/{os.path.basename(p)}"
-                               for p in STATE.get("assets", [])],
-            "campaign": STATE.get("campaign"),
-            "scenes": STATE.get("scenes", []),
-            "has_segments": bool(STATE.get("segments")),
-            "final": (f"/media/{os.path.basename(STATE['final_video'])}"
-                      if STATE.get("final_video") else None)}
+    """The LIVE working session — empty on a fresh boot. This is what every
+    other endpoint actually operates on, so what this returns is what will
+    be used, with no hidden carryover from a previous project."""
+    return _state_payload()
+
+
+@app.get("/api/session/history")
+def session_history():
+    """Cheap existence check for the 'restore previous session' prompt.
+    Reads the on-disk autosave directly — never touches or reveals it into
+    the live STATE, so a fresh boot stays genuinely fresh until the user
+    explicitly opts in via /api/session/restore."""
+    return {"available": session_store.has_session(),
+            "age": session_store.session_age_str()}
+
+
+@app.post("/api/session/restore")
+def session_restore():
+    """Explicit opt-in: load the last saved project into the live session."""
+    STATE.clear()
+    STATE.update(_load_snapshot())
+    _persist()
+    return _state_payload()
+
+
+@app.post("/api/session/new")
+def session_new():
+    """Explicit opt-in the other direction: wipe the live session to start a
+    clean project without restarting the server."""
+    STATE.clear()
+    STATE.update({"scenes": [], "segments": [], "assets": []})
+    _persist()
+    return _state_payload()
 
 
 @app.get("/media/{name}")

@@ -260,7 +260,7 @@ $("#btnFix").onclick = async () => {
 };
 
 /* ================= history: previous session restores ONLY on click ========= */
-function restoreSession(st) {
+function restoreSession(st, fromHistory = false) {
   if (st.reference_preview) {
     $("#refZone").hidden = true;
     $("#refPreview").src = st.reference_preview; $("#refPreview").hidden = false;
@@ -282,7 +282,7 @@ function restoreSession(st) {
     }
   }
   if (st.final) { $("#finalVideo").src = st.final; $("#finalVideo").hidden = false; setStatus(4, "done"); }
-  toast("Previous session restored");
+  toast(fromHistory ? "Previous session restored" : "Picked up where you left off");
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
@@ -298,12 +298,25 @@ function restoreSession(st) {
     IMAGE_MODELS = m.image;
     applyImageModelUI();
     $("#imgModel").onchange = applyImageModelUI;
+    // The live session is genuinely empty on boot (the backend no longer
+    // pre-loads the old project into memory). If the CURRENT server session
+    // already has work (page refresh mid-project), reflect it; otherwise
+    // offer the on-disk history as an explicit, opt-in restore.
     const st = await api("/api/state");
-    // Fresh canvas by default. If a previous run exists, offer it — one click.
     if (st.campaign || st.scenes?.length || st.final || st.reference) {
-      const b = $("#btnHistory");
-      b.hidden = false;
-      b.onclick = () => { restoreSession(st); b.hidden = true; };
+      restoreSession(st);               // same live session, just a page refresh
+    } else {
+      const h = await api("/api/session/history");
+      if (h.available) {
+        const b = $("#btnHistory");
+        b.textContent = `↺ Previous session (${h.age})`;
+        b.hidden = false;
+        b.onclick = async () => {
+          const restored = await api("/api/session/restore", { method: "POST" });
+          restoreSession(restored, true);   // backend state and UI now agree
+          b.hidden = true;
+        };
+      }
     }
   } catch { /* fresh session */ }
 })();
