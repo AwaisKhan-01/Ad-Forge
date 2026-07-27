@@ -12,6 +12,7 @@ Image notation: #image1..#imageN for every model EXCEPT Gemini Omni, which
 resolves <IMAGE_REF_n> tags (n is 0-based). Nothing else — @image is obsolete.
 """
 import re
+from typing import List, Optional, Tuple
 
 from app.new_pipeline.model_registry import VIDEO_MODELS
 
@@ -141,8 +142,55 @@ def build_video_prompt(scene: dict, campaign: dict, model_key: str,
     return prompt
 
 
+def bind_asset_tags(text: str, asset_binding: Optional[List[int]]) -> str:
+    """Translate the analyzer's plain 'Asset N' wording into the #imageK tag
+    that ACTUALLY corresponds to it in the images sent to the model.
+
+    The analyzer writes scenes in plain English ("Asset 2 sits on the table")
+    because that's easier for the VLM to reason about than our internal tag
+    scheme. But the image model only understands #imageK positional tags, and
+    #image1 is always the style-reference frame — so "Asset N" is never simply
+    "#imageN". asset_binding is the ordered list of asset numbers actually
+    included after #image1 (e.g. [3, 1] means Asset 3 is #image2, Asset 1 is
+    #image3); without this translation the model has no idea what "Asset 2"
+    refers to and the edit comes out wrong or ignores the asset entirely.
+    """
+    if not text or not asset_binding:
+        return text
+    out = text
+    for i, asset_num in enumerate(asset_binding):
+        out = re.sub(rf"(?i)\bAsset\s*{asset_num}\b", f"#image{i + 2}", out)
+    return out
+
+
+def validate_frame_prompt(prompt: str, image_count: int) -> Tuple[str, List[str]]:
+    """Pre-flight check run on EVERY frame prompt (generated or user-edited)
+    before it is sent to the image model. Catches the two failure modes that
+    silently produce a bad keyframe instead of an error:
+      1. a #imageN tag pointing past the images actually being sent
+      2. a leftover 'Asset N' mention that never got bound to a real #image tag
+    Returns the prompt (auto-repaired if needed) plus any warnings to surface
+    in the UI — this never blocks the render, since a slightly-off image is
+    recoverable but a lost afternoon debugging silently isn't."""
+    warnings = []
+    for m in re.finditer(r"(?i)#image(\d+)", prompt):
+        n = int(m.group(1))
+        if n > image_count:
+            warnings.append(f"prompt references #image{n} but only {image_count} "
+                            f"image(s) are being sent")
+    leftover = sorted(set(re.findall(r"(?i)\bAsset\s*\d+\b", prompt)))
+    if leftover:
+        warnings.append(f"unbound reference(s) left in prompt: {', '.join(leftover)} "
+                        f"— replaced with generic wording")
+        prompt = re.sub(r"(?i)\bAsset\s*\d+\b", "the additional reference image", prompt)
+    if not prompt.strip():
+        warnings.append("prompt is empty")
+    return prompt, warnings
+
+
 def build_frame_prompt(scene: dict, campaign: dict, has_user_assets: bool,
-                       text_mode: str = "add", font_style_desc: str = "") -> str:
+                       text_mode: str = "add", font_style_desc: str = "",
+                       asset_binding: Optional[List[int]] = None) -> str:
     """Storyboard image prompt. THE core v1 flaw fix: the reference frame
     (#image1) contributes STYLE — composition, lighting, grading, energy — while
     the CONTENT is the user's product/brand (#image2..N). v1 lightly edited the
@@ -151,6 +199,7 @@ def build_frame_prompt(scene: dict, campaign: dict, has_user_assets: bool,
     keep = adapt.get("keep", "composition, camera angle, lighting, colour grading, mood")
     replace = adapt.get("replace", "the product, brand and any people")
     visual = neutralize(scene.get("visual", "") or scene.get("visual_prompt", ""))
+    visual = bind_asset_tags(visual, asset_binding)
     product = (campaign or {}).get("product", "the user's product")
 
     if has_user_assets:

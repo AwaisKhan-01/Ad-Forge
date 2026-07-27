@@ -81,17 +81,33 @@ IMAGE_MODELS = {
         "endpoint": "fal-ai/nano-banana-2/edit",
         "supports_size": False,
         "flat_price": 0.015,
+        # verified schema: resolution enum, default '1K'. Was not exposed at all.
+        "resolutions": ["0.5K", "1K", "2K", "4K"],
+        "default_resolution": "1K",
     },
     "gpt-image-2": {
         "label": "GPT Image 2 (edit)",
         "endpoint": "fal-ai/gpt-image-2/edit",
         "supports_size": True,
-        "sizes": ["1024x1024", "1536x1024", "1024x1536"],
-        "qualities": ["low", "medium", "high"],
+        # verified schema: image_size is an ENUM of these named presets, not a
+        # pixel-dimension string. The old list ("1024x1024" etc.) matched NO
+        # valid enum value, so fal silently fell back on every call — which is
+        # exactly why only 9:16/16:9 ever came out regardless of selection.
+        "sizes": ["auto", "square_hd", "square", "portrait_4_3", "portrait_16_9",
+                 "landscape_4_3", "landscape_16_9"],
+        "qualities": ["auto", "low", "medium", "high"],
+        # fal's OpenAPI schema doesn't publish $ pricing; these are OpenAI's
+        # confirmed GPT-Image tier prices (square vs non-square), remapped onto
+        # the real size enum above. 'auto' uses the non-square tier as a safe
+        # (slightly conservative) budget estimate.
         "pricing": {
-            ("1024x1024", "low"): 0.011, ("1024x1024", "medium"): 0.042, ("1024x1024", "high"): 0.167,
-            ("1536x1024", "low"): 0.016, ("1536x1024", "medium"): 0.063, ("1536x1024", "high"): 0.25,
-            ("1024x1536", "low"): 0.016, ("1024x1536", "medium"): 0.063, ("1024x1536", "high"): 0.25,
+            ("square_hd", "low"): 0.011, ("square_hd", "medium"): 0.042, ("square_hd", "high"): 0.167,
+            ("square", "low"): 0.011, ("square", "medium"): 0.042, ("square", "high"): 0.167,
+            ("portrait_4_3", "low"): 0.016, ("portrait_4_3", "medium"): 0.063, ("portrait_4_3", "high"): 0.25,
+            ("portrait_16_9", "low"): 0.016, ("portrait_16_9", "medium"): 0.063, ("portrait_16_9", "high"): 0.25,
+            ("landscape_4_3", "low"): 0.016, ("landscape_4_3", "medium"): 0.063, ("landscape_4_3", "high"): 0.25,
+            ("landscape_16_9", "low"): 0.016, ("landscape_16_9", "medium"): 0.063, ("landscape_16_9", "high"): 0.25,
+            ("auto", "low"): 0.016, ("auto", "medium"): 0.063, ("auto", "high"): 0.25, ("auto", "auto"): 0.063,
         },
     },
 }
@@ -103,7 +119,8 @@ def image_price(model_key: str, size: str = "", quality: str = "") -> float:
     m = IMAGE_MODELS.get(model_key, IMAGE_MODELS[DEFAULT_IMAGE_MODEL])
     if not m["supports_size"]:
         return m.get("flat_price", 0.015)
-    return m.get("pricing", {}).get((size, quality), 0.05)
+    pricing = m.get("pricing", {})
+    return pricing.get((size, quality)) or pricing.get((size, "medium")) or 0.05
 
 
 def video_price(model_key: str, seconds: float, resolution: str = "720p") -> float:

@@ -17,7 +17,7 @@ from typing import Dict, List, Optional
 import fal_client
 
 from app.new_pipeline.model_registry import IMAGE_MODELS, DEFAULT_IMAGE_MODEL
-from app.new_pipeline.prompt_engine import build_frame_prompt
+from app.new_pipeline.prompt_engine import build_frame_prompt, validate_frame_prompt
 from app.new_pipeline.uploader import upload_video
 
 FRAME_DIR = "outputs/frames"
@@ -75,7 +75,7 @@ def extract_frame(video_path: str, ts: float) -> Optional[str]:
 def design_frame(scene: Dict, campaign: Dict, asset_urls: List[str],
                  reference_path: str, aspect_ratio: str, font_style: str,
                  image_model: str = DEFAULT_IMAGE_MODEL, image_size: str = "",
-                 image_quality: str = "high",
+                 image_quality: str = "high", resolution: str = "",
                  prompt_override: str = "", images_override: Optional[List[str]] = None) -> Dict:
     """Generate ONE storyboard frame. Never raises — failures are recorded on
     the scene so one bad frame can't kill the batch."""
@@ -91,19 +91,36 @@ def design_frame(scene: Dict, campaign: Dict, asset_urls: List[str],
     style_url = upload_video(frame_path)
 
     # 2. User assets = content (#image2..N), selected 1-based by the blueprint.
-    picked = []
+    # bound_nums tracks, IN ORDER, which asset number landed at each position —
+    # e.g. bound_nums=[3,1] means Asset 3 is #image2 and Asset 1 is #image3.
+    # Without this the prompt's "Asset N" wording can't be tied to a real tag.
+    picked, bound_nums = [], []
     for n in scene.get("assigned_assets", []) or []:
         if 1 <= n <= len(asset_urls):
             picked.append(asset_urls[n - 1])
+            bound_nums.append(n)
     if not picked:
         picked = asset_urls[:2]         # sensible default: brand's main assets
+        bound_nums = list(range(1, len(picked) + 1))
     image_urls = images_override or ([style_url] + picked)
+    # images_override bypasses our own asset bookkeeping (a manual re-render),
+    # so there's no reliable Asset-N -> #imageK mapping to apply.
+    asset_binding = bound_nums if not images_override else None
 
     # 3. Prompt from the central engine (or the user's exact edit).
     prompt = prompt_override.strip() if prompt_override and prompt_override.strip() else \
         build_frame_prompt(scene, campaign, has_user_assets=bool(picked),
                            text_mode=text_mode,
-                           font_style_desc=TYPOGRAPHY_STYLES.get(font_style) or "")
+                           font_style_desc=TYPOGRAPHY_STYLES.get(font_style) or "",
+                           asset_binding=asset_binding)
+
+    # 3b. Pre-flight check — catches a dangling #imageN or an unbound "Asset N"
+    # BEFORE spending on a generation call, instead of silently producing a
+    # frame that ignores the reference it couldn't resolve.
+    prompt, warnings = validate_frame_prompt(prompt, len(image_urls))
+    scene["prompt_warning"] = "; ".join(warnings) if warnings else None
+    if warnings:
+        print(f"[FRAMES] scene {scene.get('scene_number')} prompt warning: {scene['prompt_warning']}")
 
     # 4. Strength: replacing content needs room; preserving lettering needs restraint.
     strength = 0.85 if mg else (0.6 if picked else 0.3)
@@ -114,10 +131,13 @@ def design_frame(scene: Dict, campaign: Dict, asset_urls: List[str],
     args = {"prompt": prompt, "image_urls": image_urls}
     if cfg["supports_size"]:
         args["image_size"] = image_size or cfg["sizes"][0]
-        args["quality"] = image_quality
+        args["quality"] = image_quality or "auto"
     else:
         args["aspect_ratio"] = aspect_ratio
         args["strength"] = strength
+        if cfg.get("resolutions"):
+            args["resolution"] = resolution if resolution in cfg["resolutions"] \
+                else cfg.get("default_resolution", "1K")
 
     scene["image_args"], scene["image_endpoint"] = args, cfg["endpoint"]
     try:
@@ -135,7 +155,8 @@ def design_frame(scene: Dict, campaign: Dict, asset_urls: List[str],
 def design_storyboard(scenes: List[Dict], campaign: Dict, asset_paths: List[str],
                       reference_path: str, aspect_ratio: str, font_style: str,
                       image_model: str = DEFAULT_IMAGE_MODEL, image_size: str = "",
-                      image_quality: str = "high", on_progress=None) -> List[Dict]:
+                      image_quality: str = "high", resolution: str = "",
+                      on_progress=None) -> List[Dict]:
     """All frames in parallel; order restored by scene_number."""
     asset_urls = [a if str(a).startswith("http") else upload_video(a)
                   for a in (asset_paths or []) if a]
@@ -143,7 +164,7 @@ def design_storyboard(scenes: List[Dict], campaign: Dict, asset_paths: List[str]
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
         futs = {pool.submit(design_frame, s, campaign, asset_urls, reference_path,
                             aspect_ratio, font_style, image_model, image_size,
-                            image_quality): s for s in scenes}
+                            image_quality, resolution): s for s in scenes}
         for f in concurrent.futures.as_completed(futs):
             result = f.result()
             done.append(result)

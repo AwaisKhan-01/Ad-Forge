@@ -178,6 +178,7 @@ video{width:100%;border-radius:var(--radius);margin-top:16px;max-height:440px;
 .frame.err .cap{color:var(--err)}
 .frame .spin{aspect-ratio:16/10;display:grid;place-content:center;justify-items:center;
   color:var(--dim);background:var(--panel);font-size:13px}
+.warnbadge{cursor:help;color:var(--warn);font-weight:700}
 
 /* ---------- film ---------- */
 .timeline{margin-top:16px;display:flex;flex-direction:column;gap:8px}

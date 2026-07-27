@@ -63,6 +63,7 @@ class StoryboardRequest(BaseModel):
     image_model: str = DEFAULT_IMAGE_MODEL
     image_size: str = ""
     image_quality: str = "high"
+    resolution: str = ""            # Nano Banana only: 0.5K/1K/2K/4K
 
 
 class FrameEdit(BaseModel):
@@ -184,15 +185,17 @@ def storyboard(req: StoryboardRequest):
     campaign = STATE.get("campaign", {})
     STATE.update(font_style=req.font_style, image_model=req.image_model,
                  image_size=req.image_size, image_quality=req.image_quality,
-                 aspect_ratio=req.aspect_ratio)
+                 resolution=req.resolution, aspect_ratio=req.aspect_ratio)
 
     def run(job):
         def progress(scene):
             job.emit("frame", scene_number=scene.get("scene_number"),
-                     url=scene.get("generated_image_url"), error=scene.get("image_error"))
+                     url=scene.get("generated_image_url"), error=scene.get("image_error"),
+                     warning=scene.get("prompt_warning"))
         done = design_storyboard(scenes, campaign, STATE.get("assets", []), ref,
                                  req.aspect_ratio, req.font_style, req.image_model,
-                                 req.image_size, req.image_quality, on_progress=progress)
+                                 req.image_size, req.image_quality, req.resolution,
+                                 on_progress=progress)
         STATE["scenes"] = done
         _persist()
         return {"scenes": done,
@@ -216,6 +219,7 @@ def regen_frame(req: FrameEdit):
                            STATE.get("font_style", "chunky_display"),
                            STATE.get("image_model", DEFAULT_IMAGE_MODEL),
                            STATE.get("image_size", ""), STATE.get("image_quality", "high"),
+                           STATE.get("resolution", ""),
                            prompt_override=req.prompt_override,
                            images_override=req.image_urls_override)
     _persist()
@@ -319,7 +323,9 @@ def models():
                           "resolutions": v["resolutions"]}
                       for k, v in VIDEO_MODELS.items()},
             "image": {k: {"label": v["label"], "supports_size": v["supports_size"],
-                          "sizes": v.get("sizes"), "qualities": v.get("qualities")}
+                          "sizes": v.get("sizes"), "qualities": v.get("qualities"),
+                          "resolutions": v.get("resolutions"),
+                          "default_resolution": v.get("default_resolution")}
                       for k, v in IMAGE_MODELS.items()},
             "defaults": {"video": DEFAULT_VIDEO_MODEL, "image": DEFAULT_IMAGE_MODEL}}
 

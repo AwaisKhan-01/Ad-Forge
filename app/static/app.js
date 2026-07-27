@@ -141,6 +141,32 @@ const pushSceneEdits = async () =>
   window._scenes && api("/api/scenes", { method: "PUT", body: window._scenes });
 
 /* ================= 3 · storyboard ================= */
+/* Per-image-model settings: each model has a genuinely different set of
+   controls (GPT Image 2 has named size presets + quality; Nano Banana has a
+   resolution tier; neither is "aspect ratio" in the video-model sense), so
+   the right group is shown/hidden instead of forcing one generic control. */
+const LABELS = { auto: "Auto", square_hd: "Square HD", square: "Square",
+  portrait_4_3: "Portrait 4:3", portrait_16_9: "Portrait 16:9",
+  landscape_4_3: "Landscape 4:3", landscape_16_9: "Landscape 16:9",
+  low: "Low", medium: "Medium", high: "High" };
+let IMAGE_MODELS = {};
+function applyImageModelUI() {
+  const cfg = IMAGE_MODELS[$("#imgModel").value];
+  if (!cfg) return;
+  $("#aspectWrap").hidden = !!cfg.supports_size;         // GPT uses its own size presets
+  $("#gptSizeWrap").hidden = !cfg.supports_size;
+  $("#gptQualWrap").hidden = !cfg.supports_size;
+  $("#nanoResWrap").hidden = !cfg.resolutions;
+  if (cfg.supports_size) {
+    $("#gptSize").innerHTML = cfg.sizes.map((s) => `<option value="${s}">${LABELS[s] || s}</option>`).join("");
+    $("#gptQuality").innerHTML = cfg.qualities.map((q) => `<option value="${q}" ${q === "auto" ? "selected" : ""}>${LABELS[q] || q}</option>`).join("");
+  }
+  if (cfg.resolutions) {
+    $("#nanoRes").innerHTML = cfg.resolutions.map((r) =>
+      `<option value="${r}" ${r === cfg.default_resolution ? "selected" : ""}>${r}</option>`).join("");
+  }
+}
+
 /* Typography is picked from visual specimen tiles, not a blind dropdown. */
 window._fontStyle = "chunky_display";
 document.querySelectorAll(".font-tile").forEach((tile) => {
@@ -161,14 +187,19 @@ $("#btnStoryboard").onclick = async () => {
       `<div class="frame" id="fr-${s.scene_number}">
          <div class="spin"><div class="loader"></div>scene ${s.scene_number}</div>
          <div class="cap">${s.role_in_story || "rendering…"}</div></div>`).join("");
+    const cfg = IMAGE_MODELS[$("#imgModel").value] || {};
     const { job_id } = await api("/api/storyboard", { method: "POST", body: {
       api_key: key(), aspect_ratio: $("#aspect").value, font_style: window._fontStyle,
-      image_model: $("#imgModel").value } });
+      image_model: $("#imgModel").value,
+      image_size: cfg.supports_size ? $("#gptSize").value : "",
+      image_quality: cfg.supports_size ? $("#gptQuality").value : "",
+      resolution: cfg.resolutions ? $("#nanoRes").value : "" } });
     const result = await follow(job_id, (ev) => {
       if (ev.event !== "frame") return;
       const cell = $(`#fr-${ev.scene_number}`); if (!cell) return;
+      const warn = ev.warning ? `<span class="warnbadge" title="${ev.warning}">⚠</span>` : "";
       cell.innerHTML = ev.url
-        ? `<img src="${ev.url}"><div class="cap">Scene ${ev.scene_number} ✓</div>`
+        ? `<img src="${ev.url}"><div class="cap">Scene ${ev.scene_number} ✓ ${warn}</div>`
         : `<div class="spin">✖</div><div class="cap">${ev.error || "failed"}</div>`;
       if (!ev.url) cell.classList.add("err");
     });
@@ -269,6 +300,9 @@ function restoreSession(st) {
         ${v.label} · $${v.price_per_sec.toFixed(3)}/s</option>`).join("");
     $("#imgModel").innerHTML = Object.entries(m.image)
       .map(([k, v]) => `<option value="${k}" ${k === m.defaults.image ? "selected" : ""}>${v.label}</option>`).join("");
+    IMAGE_MODELS = m.image;
+    applyImageModelUI();
+    $("#imgModel").onchange = applyImageModelUI;
     const st = await api("/api/state");
     // Fresh canvas by default. If a previous run exists, offer it — one click.
     if (st.campaign || st.scenes?.length || st.final || st.reference) {

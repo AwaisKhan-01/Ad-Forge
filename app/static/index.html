@@ -105,7 +105,10 @@
     <div class="card">
       <div class="row wrap">
         <label>Image model <select id="imgModel"></select></label>
-        <label>Aspect <select id="aspect"><option>16:9</option><option>9:16</option><option>1:1</option></select></label>
+        <label id="aspectWrap">Aspect <select id="aspect"><option>16:9</option><option>9:16</option><option>1:1</option></select></label>
+        <label id="gptSizeWrap" hidden>Size <select id="gptSize"></select></label>
+        <label id="gptQualWrap" hidden>Quality <select id="gptQuality"></select></label>
+        <label id="nanoResWrap" hidden>Resolution <select id="nanoRes"></select></label>
         <button id="btnStoryboard" class="primary">🎨 Generate frames</button>
       </div>
 
