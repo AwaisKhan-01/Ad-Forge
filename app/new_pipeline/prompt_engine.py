@@ -96,14 +96,29 @@ def _speech_block(scene: dict, model: dict) -> str:
 
 
 def build_video_prompt(scene: dict, campaign: dict, model_key: str,
-                       text_mode: str = "add", motion_graphic: bool = False) -> str:
-    """Assemble the per-scene, per-model prompt from exclusive blocks."""
+                       text_mode: str = "add", motion_graphic: bool = False,
+                       frame_roles: Optional[List[str]] = None) -> str:
+    """Assemble the per-scene, per-model prompt from exclusive blocks.
+
+    frame_roles labels every attached image as #image1..N IN ORDER (Gemini's
+    <IMAGE_REF_n> falls out of the notation pass). Only multi-image models get
+    this — Kling/Wan/Veo address frames through dedicated API params
+    (image_url / end_image_url / first+last), so numbered tags don't exist in
+    their contract and the prompt speaks of "start frame"/"end frame" instead.
+    """
     model = VIDEO_MODELS[model_key]
     dialect = model["dialect"]
 
     visual = neutralize(scene.get("visual", "") or scene.get("visual_prompt", ""))
+    # Asset images are attached to the IMAGE stage only — a video model never
+    # receives them, so "Asset N" would be an unresolvable reference here.
+    visual = re.sub(r"(?i)\bAsset\s*\d+\b", "the product", visual)
     motion = neutralize(scene.get("motion", ""))
-    blocks = [_story_context(scene, campaign), visual]
+    blocks = [_story_context(scene, campaign)]
+    if frame_roles:
+        blocks.append("IMAGE ROLES — " + " ".join(
+            f"#image{i + 1}: {role}." for i, role in enumerate(frame_roles)))
+    blocks.append(visual)
 
     if motion_graphic:
         blocks.append(

@@ -100,19 +100,43 @@ def _is_content_flag(msg: str) -> bool:
 def render_segment(idx: int, scene: Dict, campaign: Dict, seconds: float,
                    model_key: str, aspect_ratio: str, resolution: str,
                    text_mode: str, end_frame: Optional[str],
-                   identity_frame: Optional[str] = "") -> Dict:
-    """Render one chunk. NEVER raises — a failed chunk must not sink the run."""
+                   prev_frame: Optional[str] = "", next_frame: Optional[str] = "") -> Dict:
+    """Render one chunk. NEVER raises — a failed chunk must not sink the run.
+
+    FRAME ORDER for multi-image models is CHRONOLOGICAL and each image's role
+    is spelled out in the prompt as #image1..N (Gemini gets <IMAGE_REF_n> via
+    the notation pass). Unlabeled references are how motion ends up reversed:
+    the model guesses which frame is the start.
+      continuous : [prev, own]  — open on the previous take's frame, arrive at own
+      cut        : [own, prev]  — own composition first; prev is identity-only
+      MG handoff : [own, next]  — live in own frame, exit toward the next
+    """
     m = VIDEO_MODELS[model_key]
     mg = bool(campaign.get("is_motion_graphic"))
     own = scene.get("generated_image_url") or ""
     scene["_has_end_frame"] = bool(end_frame)
 
-    frames = [own]
-    if identity_frame and m["payload"] == "multi_image":
-        frames.append(identity_frame)   # identity ref is safe ONLY for list models
+    frames, roles = [own], ["this scene's storyboard frame — the shot's composition"]
+    if m["payload"] == "multi_image":
+        if mg and next_frame:
+            frames = [own, next_frame]
+            roles = ["this scene's composition — the shot lives HERE for most of its duration",
+                     "the NEXT scene's composition — only in the final moments, start "
+                     "moving toward it; do not settle into it"]
+        elif not mg and prev_frame and scene.get("transition") == "continuous":
+            frames = [prev_frame, own]      # chronological: the take continues
+            roles = ["the EXACT frame this shot opens on — the previous take continues "
+                     "without a cut",
+                     "this scene's composition — carry the motion seamlessly into it"]
+        elif not mg and prev_frame:
+            frames = [own, prev_frame]
+            roles = ["this scene's storyboard frame — render THIS composition",
+                     "identity reference from the previous shot (same subject, wardrobe, "
+                     "lighting, world); for consistency only — do NOT show this composition"]
 
     prompt = build_video_prompt(scene, campaign, model_key,
-                                text_mode=text_mode, motion_graphic=mg)
+                                text_mode=text_mode, motion_graphic=mg,
+                                frame_roles=roles if m["payload"] == "multi_image" else None)
     args = _adapt_payload(model_key, prompt, seconds, scene,
                           aspect_ratio, resolution, frames, end_frame)
 
@@ -151,8 +175,9 @@ def render_all(scenes: List[Dict], campaign: Dict, model_key: str, total_duratio
                duration_overrides: Optional[List[float]] = None,
                on_progress=None) -> List[Dict]:
     """All chunks in parallel. Continuity per model family:
-    end-frame models chain own->next; list models get prev frame as identity ref
-    on 'cut', prev-then-own ordering on 'continuous'."""
+    end-frame models chain own->next via the hard end_image_url lock; multi-image
+    models get chronologically-ordered, role-labeled reference frames (see
+    render_segment for the exact orderings)."""
     durations = (duration_overrides if duration_overrides and
                  len(duration_overrides) == len(scenes)
                  else plan_durations(scenes, total_duration, model_key))
@@ -163,14 +188,13 @@ def render_all(scenes: List[Dict], campaign: Dict, model_key: str, total_duratio
     def job(i, sc):
         nxt = scenes[i + 1].get("generated_image_url") if i + 1 < len(scenes) else None
         prev = scenes[i - 1].get("generated_image_url") if i > 0 else None
-        end_frame, identity = None, None
+        end_frame = None
         if m["payload"] in ("endframe", "flf"):
             if mg or sc.get("transition") == "continuous":
                 end_frame = nxt            # land exactly where the next clip starts
-        elif prev:
-            identity = prev                # style/identity hint for list models
         return render_segment(i, sc, campaign, durations[i], model_key,
-                              aspect_ratio, resolution, text_mode, end_frame, identity)
+                              aspect_ratio, resolution, text_mode, end_frame,
+                              prev_frame=prev, next_frame=nxt)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
         futs = [pool.submit(job, i, sc) for i, sc in enumerate(scenes)]
