@@ -67,7 +67,7 @@ class CostTracker:
         so this never crashes a run.
         """
         try:
-            from app.new_pipeline.frame_designer import image_price
+            from app.new_pipeline.model_registry import image_price
             per_image = image_price(image_model, image_size, image_quality)
         except Exception:
             per_image = NANO_BANANA_ESTIMATE

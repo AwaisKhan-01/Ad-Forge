@@ -1,6 +1,8 @@
 fal-client==1.0.0
 yt-dlp==2026.07.04
-gradio==6.19.0
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
 python-dotenv==1.2.2
 requests==2.32.3
 pydantic>=2.0.0
