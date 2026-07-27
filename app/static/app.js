@@ -141,24 +141,20 @@ const pushSceneEdits = async () =>
   window._scenes && api("/api/scenes", { method: "PUT", body: window._scenes });
 
 /* ================= 3 · storyboard ================= */
-/* Per-image-model settings: each model has a genuinely different set of
-   controls (GPT Image 2 has named size presets + quality; Nano Banana has a
-   resolution tier; neither is "aspect ratio" in the video-model sense), so
-   the right group is shown/hidden instead of forcing one generic control. */
-const LABELS = { auto: "Auto", square_hd: "Square HD", square: "Square",
-  portrait_4_3: "Portrait 4:3", portrait_16_9: "Portrait 16:9",
-  landscape_4_3: "Landscape 4:3", landscape_16_9: "Landscape 16:9",
-  low: "Low", medium: "Medium", high: "High" };
+/* Aspect ratio is ONE shared control for every model, everywhere in the app —
+   only 9:16 and 16:9 are ever offered (see the <select id="aspect"> options).
+   GPT Image 2 has no aspect_ratio param, so the backend maps that same choice
+   onto its named size preset; it does NOT get a second, separate selector.
+   Quality (GPT) and Resolution (Nano Banana) are genuinely different concepts
+   — not aspect ratio — so those keep their own small controls. */
+const LABELS = { auto: "Auto", low: "Low", medium: "Medium", high: "High" };
 let IMAGE_MODELS = {};
 function applyImageModelUI() {
   const cfg = IMAGE_MODELS[$("#imgModel").value];
   if (!cfg) return;
-  $("#aspectWrap").hidden = !!cfg.supports_size;         // GPT uses its own size presets
-  $("#gptSizeWrap").hidden = !cfg.supports_size;
   $("#gptQualWrap").hidden = !cfg.supports_size;
   $("#nanoResWrap").hidden = !cfg.resolutions;
   if (cfg.supports_size) {
-    $("#gptSize").innerHTML = cfg.sizes.map((s) => `<option value="${s}">${LABELS[s] || s}</option>`).join("");
     $("#gptQuality").innerHTML = cfg.qualities.map((q) => `<option value="${q}" ${q === "auto" ? "selected" : ""}>${LABELS[q] || q}</option>`).join("");
   }
   if (cfg.resolutions) {
@@ -191,7 +187,6 @@ $("#btnStoryboard").onclick = async () => {
     const { job_id } = await api("/api/storyboard", { method: "POST", body: {
       api_key: key(), aspect_ratio: $("#aspect").value, font_style: window._fontStyle,
       image_model: $("#imgModel").value,
-      image_size: cfg.supports_size ? $("#gptSize").value : "",
       image_quality: cfg.supports_size ? $("#gptQuality").value : "",
       resolution: cfg.resolutions ? $("#nanoRes").value : "" } });
     const result = await follow(job_id, (ev) => {

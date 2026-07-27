@@ -14,7 +14,9 @@ VIDEO_MODELS = {
         "dialect": "seedance",          # concise directives, #imageN tags
         "payload": "multi_image",       # image_urls list
         "duration": {"type": "string", "min": 4, "max": 15, "auto": True},
-        "aspect_ratios": ["auto", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+        # App-wide policy: only 9:16 and 16:9 are ever offered, though the
+        # model itself supports more (21:9, 4:3, 1:1, 3:4, auto).
+        "aspect_ratios": ["16:9", "9:16"],
         "resolutions": ["480p", "720p"],
         "max_images": 9,
         "audio": True,                  # generate_audio flag
@@ -64,7 +66,7 @@ VIDEO_MODELS = {
         "dialect": "veo",               # cinematic prose, audio cues inline
         "payload": "flf",               # first_frame_url + last_frame_url (BOTH required)
         "duration": {"type": "suffixed", "values": [4, 6, 8]},   # '4s' | '6s' | '8s'
-        "aspect_ratios": ["auto", "16:9", "9:16"],
+        "aspect_ratios": ["16:9", "9:16"],
         "resolutions": ["720p", "1080p"],
         "max_images": 2,
         "audio": True,
@@ -88,26 +90,22 @@ IMAGE_MODELS = {
     "gpt-image-2": {
         "label": "GPT Image 2 (edit)",
         "endpoint": "fal-ai/gpt-image-2/edit",
+        # This model has no "aspect_ratio" param — it takes a named image_size
+        # preset instead (verified schema). App-wide policy is only 9:16/16:9,
+        # so it does NOT get its own separate size picker: the SAME aspect
+        # selector every other model uses is mapped onto its two 16:9-family
+        # presets below. (A second, separate "Size" dropdown for just this one
+        # model was the exact redundant-selector complaint from earlier.)
         "supports_size": True,
-        # verified schema: image_size is an ENUM of these named presets, not a
-        # pixel-dimension string. The old list ("1024x1024" etc.) matched NO
-        # valid enum value, so fal silently fell back on every call — which is
-        # exactly why only 9:16/16:9 ever came out regardless of selection.
-        "sizes": ["auto", "square_hd", "square", "portrait_4_3", "portrait_16_9",
-                 "landscape_4_3", "landscape_16_9"],
+        "aspect_to_size": {"16:9": "landscape_16_9", "9:16": "portrait_16_9"},
         "qualities": ["auto", "low", "medium", "high"],
         # fal's OpenAPI schema doesn't publish $ pricing; these are OpenAI's
-        # confirmed GPT-Image tier prices (square vs non-square), remapped onto
-        # the real size enum above. 'auto' uses the non-square tier as a safe
-        # (slightly conservative) budget estimate.
+        # confirmed GPT-Image tier prices for the non-square (16:9-family)
+        # sizes — the only ones this app ever requests.
         "pricing": {
-            ("square_hd", "low"): 0.011, ("square_hd", "medium"): 0.042, ("square_hd", "high"): 0.167,
-            ("square", "low"): 0.011, ("square", "medium"): 0.042, ("square", "high"): 0.167,
-            ("portrait_4_3", "low"): 0.016, ("portrait_4_3", "medium"): 0.063, ("portrait_4_3", "high"): 0.25,
             ("portrait_16_9", "low"): 0.016, ("portrait_16_9", "medium"): 0.063, ("portrait_16_9", "high"): 0.25,
-            ("landscape_4_3", "low"): 0.016, ("landscape_4_3", "medium"): 0.063, ("landscape_4_3", "high"): 0.25,
             ("landscape_16_9", "low"): 0.016, ("landscape_16_9", "medium"): 0.063, ("landscape_16_9", "high"): 0.25,
-            ("auto", "low"): 0.016, ("auto", "medium"): 0.063, ("auto", "high"): 0.25, ("auto", "auto"): 0.063,
+            ("portrait_16_9", "auto"): 0.063, ("landscape_16_9", "auto"): 0.063,
         },
     },
 }
@@ -115,10 +113,17 @@ IMAGE_MODELS = {
 DEFAULT_IMAGE_MODEL = "nano-banana-2-edit"
 
 
-def image_price(model_key: str, size: str = "", quality: str = "") -> float:
+def gpt_size_for(aspect_ratio: str) -> str:
+    """Map the app's one shared aspect selector onto GPT Image 2's named
+    preset — this model has no aspect_ratio param, only image_size."""
+    return IMAGE_MODELS["gpt-image-2"]["aspect_to_size"].get(aspect_ratio, "landscape_16_9")
+
+
+def image_price(model_key: str, aspect_ratio: str = "", quality: str = "") -> float:
     m = IMAGE_MODELS.get(model_key, IMAGE_MODELS[DEFAULT_IMAGE_MODEL])
     if not m["supports_size"]:
         return m.get("flat_price", 0.015)
+    size = gpt_size_for(aspect_ratio) if model_key == "gpt-image-2" else aspect_ratio
     pricing = m.get("pricing", {})
     return pricing.get((size, quality)) or pricing.get((size, "medium")) or 0.05
 

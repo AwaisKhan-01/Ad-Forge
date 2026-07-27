@@ -16,7 +16,7 @@ from typing import Dict, List, Optional
 
 import fal_client
 
-from app.new_pipeline.model_registry import IMAGE_MODELS, DEFAULT_IMAGE_MODEL
+from app.new_pipeline.model_registry import IMAGE_MODELS, DEFAULT_IMAGE_MODEL, gpt_size_for
 from app.new_pipeline.prompt_engine import build_frame_prompt, validate_frame_prompt
 from app.new_pipeline.uploader import upload_video
 
@@ -74,7 +74,7 @@ def extract_frame(video_path: str, ts: float) -> Optional[str]:
 
 def design_frame(scene: Dict, campaign: Dict, asset_urls: List[str],
                  reference_path: str, aspect_ratio: str, font_style: str,
-                 image_model: str = DEFAULT_IMAGE_MODEL, image_size: str = "",
+                 image_model: str = DEFAULT_IMAGE_MODEL,
                  image_quality: str = "high", resolution: str = "",
                  prompt_override: str = "", images_override: Optional[List[str]] = None) -> Dict:
     """Generate ONE storyboard frame. Never raises — failures are recorded on
@@ -130,7 +130,9 @@ def design_frame(scene: Dict, campaign: Dict, asset_urls: List[str],
     cfg = IMAGE_MODELS.get(image_model, IMAGE_MODELS[DEFAULT_IMAGE_MODEL])
     args = {"prompt": prompt, "image_urls": image_urls}
     if cfg["supports_size"]:
-        args["image_size"] = image_size or cfg["sizes"][0]
+        # GPT Image 2 has no aspect_ratio param — only 9:16/16:9 are offered
+        # app-wide, so the shared aspect selector maps onto its named preset.
+        args["image_size"] = gpt_size_for(aspect_ratio)
         args["quality"] = image_quality or "auto"
     else:
         args["aspect_ratio"] = aspect_ratio
@@ -154,7 +156,7 @@ def design_frame(scene: Dict, campaign: Dict, asset_urls: List[str],
 
 def design_storyboard(scenes: List[Dict], campaign: Dict, asset_paths: List[str],
                       reference_path: str, aspect_ratio: str, font_style: str,
-                      image_model: str = DEFAULT_IMAGE_MODEL, image_size: str = "",
+                      image_model: str = DEFAULT_IMAGE_MODEL,
                       image_quality: str = "high", resolution: str = "",
                       on_progress=None) -> List[Dict]:
     """All frames in parallel; order restored by scene_number."""
@@ -163,7 +165,7 @@ def design_storyboard(scenes: List[Dict], campaign: Dict, asset_paths: List[str]
     done = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
         futs = {pool.submit(design_frame, s, campaign, asset_urls, reference_path,
-                            aspect_ratio, font_style, image_model, image_size,
+                            aspect_ratio, font_style, image_model,
                             image_quality, resolution): s for s in scenes}
         for f in concurrent.futures.as_completed(futs):
             result = f.result()

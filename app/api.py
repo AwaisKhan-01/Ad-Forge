@@ -58,11 +58,10 @@ class AnalyzeRequest(BaseModel):
 
 class StoryboardRequest(BaseModel):
     api_key: str
-    aspect_ratio: str = "16:9"
+    aspect_ratio: str = "16:9"      # only 9:16 / 16:9 offered app-wide
     font_style: str = "chunky_display"
     image_model: str = DEFAULT_IMAGE_MODEL
-    image_size: str = ""
-    image_quality: str = "high"
+    image_quality: str = "high"     # GPT Image 2 only
     resolution: str = ""            # Nano Banana only: 0.5K/1K/2K/4K
 
 
@@ -184,7 +183,7 @@ def storyboard(req: StoryboardRequest):
         raise HTTPException(400, "Analyze the reference first")
     campaign = STATE.get("campaign", {})
     STATE.update(font_style=req.font_style, image_model=req.image_model,
-                 image_size=req.image_size, image_quality=req.image_quality,
+                 image_quality=req.image_quality,
                  resolution=req.resolution, aspect_ratio=req.aspect_ratio)
 
     def run(job):
@@ -194,12 +193,12 @@ def storyboard(req: StoryboardRequest):
                      warning=scene.get("prompt_warning"))
         done = design_storyboard(scenes, campaign, STATE.get("assets", []), ref,
                                  req.aspect_ratio, req.font_style, req.image_model,
-                                 req.image_size, req.image_quality, req.resolution,
+                                 req.image_quality, req.resolution,
                                  on_progress=progress)
         STATE["scenes"] = done
         _persist()
         return {"scenes": done,
-                "image_cost": len(done) * image_price(req.image_model, req.image_size,
+                "image_cost": len(done) * image_price(req.image_model, req.aspect_ratio,
                                                       req.image_quality)}
     return {"job_id": jobs.start("storyboard", run).id}
 
@@ -218,7 +217,7 @@ def regen_frame(req: FrameEdit):
                            STATE.get("reference_path"), STATE.get("aspect_ratio", "16:9"),
                            STATE.get("font_style", "chunky_display"),
                            STATE.get("image_model", DEFAULT_IMAGE_MODEL),
-                           STATE.get("image_size", ""), STATE.get("image_quality", "high"),
+                           STATE.get("image_quality", "high"),
                            STATE.get("resolution", ""),
                            prompt_override=req.prompt_override,
                            images_override=req.image_urls_override)
@@ -323,7 +322,7 @@ def models():
                           "resolutions": v["resolutions"]}
                       for k, v in VIDEO_MODELS.items()},
             "image": {k: {"label": v["label"], "supports_size": v["supports_size"],
-                          "sizes": v.get("sizes"), "qualities": v.get("qualities"),
+                          "qualities": v.get("qualities"),
                           "resolutions": v.get("resolutions"),
                           "default_resolution": v.get("default_resolution")}
                       for k, v in IMAGE_MODELS.items()},
