@@ -579,7 +579,7 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
                     # always visible. GPT Image 2 additionally exposes image_size +
                     # quality, which only appear when GPT is selected.
                     aspect_ratio_choice = gr.Dropdown(
-                        choices=["16:9", "9:16", "1:1"], value="16:9",
+                        choices=["16:9", "9:16", "1:1"], value="9:16",
                         label="Aspect Ratio (Output / Video)")
                     _gpt = IMAGE_MODELS["gpt-image-2"]
                     image_size_choice = gr.Dropdown(

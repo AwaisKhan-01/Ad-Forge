@@ -8,6 +8,7 @@ frames/
 segments/
 outputs/
 downloads/
+uploads/
 
 # Python caches / virtualenvs
 __pycache__/
