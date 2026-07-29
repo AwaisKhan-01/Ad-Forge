@@ -54,19 +54,37 @@ def get_semantic_duration(ts_str: str) -> float:
     except Exception:
         return 3.0
 
-# Natural ad delivery is ~2 words/sec INCLUDING breaths and pauses. The old 0.4s
-# (150 wpm, zero pauses) systematically under-allocated, so lines got cut off.
-SECONDS_PER_WORD = 0.5
+# Speech time tracks SYLLABLES, not words — "I'll" and "generation" are both one
+# word but differ 4x in speaking time. The old 0.5 s/word rule treated them the
+# same and systematically over-allocated on short-word ad copy (a real 5-scene
+# script that reads in ~19s was planned at 29s). Natural ad delivery is ~4.5
+# syllables/sec including breaths and micro-pauses.
+SYLLABLES_PER_SECOND = 4.5
 SPEECH_LEAD_TAIL = 0.8   # brief beat before/after speaking so it doesn't feel clipped
 MAX_TOTAL_OVERRUN = 1.3  # cap total inflation vs target — model time costs money
 MODEL_MAX_CHUNK = 10.0   # hard per-chunk ceiling for the video models
 MODEL_MIN_CHUNK = 3.0    # hard per-chunk floor: models reject shorter clips
 
 
+def _syllable_count(word: str) -> int:
+    """Cheap syllable estimate: count vowel groups, discount a silent final 'e'.
+    Within ~±1 syllable on ad copy, which is accurate enough for pacing."""
+    w = re.sub(r"[^a-z]", "", word.lower())
+    if not w:
+        return 1
+    n = len(re.findall(r"[aeiouy]+", w))
+    if w.endswith("e") and not w.endswith(("le", "ee", "ye")) and n > 1:
+        n -= 1
+    return max(1, n)
+
+
 def speech_seconds_needed(scene: Dict) -> float:
     """Seconds this scene's dialogue physically needs to be spoken naturally."""
-    words = len(_scene_speech(scene).split())
-    return (words * SECONDS_PER_WORD + SPEECH_LEAD_TAIL) if words else 0.0
+    words = _scene_speech(scene).split()
+    if not words:
+        return 0.0
+    syllables = sum(_syllable_count(w) for w in words)
+    return syllables / SYLLABLES_PER_SECOND + SPEECH_LEAD_TAIL
 
 
 def clamp_chunk(seconds: float) -> int:
