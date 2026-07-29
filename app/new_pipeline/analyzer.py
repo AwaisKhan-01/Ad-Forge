@@ -103,9 +103,16 @@ M3. VISUAL = DESIGNED COMPOSITION. Describe the layout and elements: background
     CRITICAL: describe the REFERENCE VIDEO'S ACTUAL rendering style — if it is
     dark 3D with glass/glow, say so; if it is photoreal, say so. Do NOT default to
     "flat vector" or "illustration" unless the reference genuinely looks that way.
-M4. 'motion' = KINETIC BEHAVIOUR of the graphics, NOT a camera move. Use motion
-    design vocabulary: slide in, mask reveal, scale punch, wipe, whip pan, kinetic
-    type stagger, morph, parallax drift, snap cut on the beat.
+M4. 'motion' = the scene's ANIMATION SCRIPT — the kinetic behaviour of the
+    graphics, never a camera move. WATCH the shot and TRANSCRIBE its actual
+    choreography as 3-6 timed beats covering the whole clip, e.g.:
+    "0-20%: logo scales in with overshoot; 20-60%: headline staggers in word by
+    word; 60-100%: panels wipe left revealing the end composition".
+    Use motion-design vocabulary (slide in, mask reveal, scale punch, wipe,
+    kinetic type stagger, morph, parallax drift). Every beat must describe what
+    the REFERENCE actually does in that shot — never invent generic motion. A
+    one-line summary is NOT acceptable; the video model animates exactly and
+    only what you write here.
 M5. VISUAL CONSISTENCY: all scenes share ONE design system. Repeat the same
     palette, type treatment and layout logic in every scene so the ad reads as a
     single designed piece, not unrelated frames.

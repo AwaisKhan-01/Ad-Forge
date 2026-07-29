@@ -495,16 +495,31 @@ def _process_single_video_segment(idx: int, scene: Dict, seg_duration: float, to
         # Motion graphics: nobody speaks. Drive precise graphic animation and, when
         # the storyboard supplies design copy, animate that exact text.
         copy_text = _neutralize_flaggable((scene.get("on_screen_text") or "").strip().replace('"', ""))
-        isolated_prompt += (
-            " MOTION GRAPHICS — AUTHOR A FULL ANIMATED SEQUENCE, do not merely add drift to "
-            "the still image. The supplied frame is one key pose; you must CREATE the "
-            "surrounding animation. Choreograph multiple beats inside this clip: elements "
-            "enter, transform and exit with snappy overshoot and settle, staggered timing, "
-            "mask/wipe reveals, scale punches, whip transitions and secondary motion. "
-            "Fast-paced and fluid with continuous movement from the first frame to the last "
-            "— never a static or near-still shot. Precise, deliberate easing. "
-            "No talking, no lip-sync, no human speech."
-        )
+        if m_desc:
+            # The analyzer transcribed this shot's real choreography (injected
+            # above as "ANIMATION — perform exactly this"). Don't bury it under
+            # generic choreography vocabulary that can contradict it — the
+            # model's job is to EXECUTE the reference's beats, not invent.
+            isolated_prompt += (
+                " MOTION GRAPHICS — the supplied frame is one key pose; CREATE the full "
+                "animated sequence by executing the ANIMATION beats above precisely and "
+                "in their stated order and timing. Continuous movement from the first "
+                "frame to the last — never a static or near-still shot. Precise, "
+                "deliberate easing. No talking, no lip-sync, no human speech."
+            )
+        else:
+            # FALLBACK ONLY: the analyzer gave no animation script for this scene,
+            # so fall back to generic motion-design choreography.
+            isolated_prompt += (
+                " MOTION GRAPHICS — AUTHOR A FULL ANIMATED SEQUENCE, do not merely add drift to "
+                "the still image. The supplied frame is one key pose; you must CREATE the "
+                "surrounding animation. Choreograph multiple beats inside this clip: elements "
+                "enter, transform and exit with snappy overshoot and settle, staggered timing, "
+                "mask/wipe reveals, scale punches, whip transitions and secondary motion. "
+                "Fast-paced and fluid with continuous movement from the first frame to the last "
+                "— never a static or near-still shot. Precise, deliberate easing. "
+                "No talking, no lip-sync, no human speech."
+            )
         if keep_existing_text:
             # The frame already carries its own designed typography. Animate THAT
             # type rather than generating new copy on top of it.
