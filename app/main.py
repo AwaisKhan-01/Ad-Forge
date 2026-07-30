@@ -37,9 +37,17 @@ h1, h2, h3, p { color: #f3f4f6 !important; }
 .tabitem { border: none !important; background: transparent !important; }
 """
 
+# NOTE: .set() keys without the _dark suffix only style Gradio's LIGHT palette.
+# Both variants are set to the same dark values so the UI is identical no
+# matter which palette the visitor's browser starts in.
 THEME = gr.themes.Base(primary_hue="indigo", neutral_hue="gray").set(
     body_background_fill="#0b0f19", block_background_fill="#111827",
-    block_border_color="#1f2937", button_primary_background_fill="#6366f1"
+    block_border_color="#1f2937", button_primary_background_fill="#6366f1",
+    body_background_fill_dark="#0b0f19", block_background_fill_dark="#111827",
+    block_border_color_dark="#1f2937", button_primary_background_fill_dark="#6366f1",
+    body_text_color="#f3f4f6", body_text_color_dark="#f3f4f6",
+    block_label_text_color="#9ca3af", block_label_text_color_dark="#9ca3af",
+    input_background_fill="#1f2937", input_background_fill_dark="#1f2937",
 )
 
 def set_fal_key(api_key: str):
@@ -507,6 +515,21 @@ def step4_rerender_segment(api_key, segments_state, scene_number, resolution, pr
     except Exception as e:
         return None, f"Re-render Failed: {str(e)}", segments_state
 
+# Force dark mode for EVERY visitor. Gradio picks its light or dark variable
+# set from the browser's prefers-color-scheme, but our custom CSS hardcodes
+# dark backgrounds — on a light-mode browser that mix rendered black labels on
+# near-black panels and white textboxes. Redirecting onto ?__theme=dark makes
+# the app look identical on every machine.
+FORCE_DARK_JS = """
+() => {
+  const url = new URL(window.location);
+  if (url.searchParams.get('__theme') !== 'dark') {
+    url.searchParams.set('__theme', 'dark');
+    window.location.href = url.href;
+  }
+}
+"""
+
 # --- UI LAYOUT ---
 with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
     with gr.Column(elem_id="header-container"):
@@ -816,4 +839,4 @@ with gr.Blocks(title="AdForge Studio Pro", theme=THEME, css=CUSTOM_CSS) as demo:
     )
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+    demo.launch(server_name="0.0.0.0", server_port=7860, js=FORCE_DARK_JS)
