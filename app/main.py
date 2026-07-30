@@ -46,8 +46,28 @@ THEME = gr.themes.Base(primary_hue="indigo", neutral_hue="gray").set(
     body_background_fill_dark="#0b0f19", block_background_fill_dark="#111827",
     block_border_color_dark="#1f2937", button_primary_background_fill_dark="#6366f1",
     body_text_color="#f3f4f6", body_text_color_dark="#f3f4f6",
+    body_text_color_subdued="#9ca3af", body_text_color_subdued_dark="#9ca3af",
     block_label_text_color="#9ca3af", block_label_text_color_dark="#9ca3af",
     input_background_fill="#1f2937", input_background_fill_dark="#1f2937",
+    input_border_color="#374151", input_border_color_dark="#374151",
+    # Secondary surfaces — these were still rendering light (white 'Fetch
+    # Source' button, white file-list rows, white code chips) because only the
+    # primary vars were pinned. Pin every surface Gradio derives from the
+    # light palette to the SAME dark values in both variants.
+    background_fill_primary="#111827", background_fill_primary_dark="#111827",
+    background_fill_secondary="#1f2937", background_fill_secondary_dark="#1f2937",
+    border_color_primary="#374151", border_color_primary_dark="#374151",
+    button_secondary_background_fill="#374151", button_secondary_background_fill_dark="#374151",
+    button_secondary_background_fill_hover="#4b5563", button_secondary_background_fill_hover_dark="#4b5563",
+    button_secondary_text_color="#f3f4f6", button_secondary_text_color_dark="#f3f4f6",
+    button_secondary_border_color="#4b5563", button_secondary_border_color_dark="#4b5563",
+    code_background_fill="#1f2937", code_background_fill_dark="#1f2937",
+    table_even_background_fill="#111827", table_even_background_fill_dark="#111827",
+    table_odd_background_fill="#1f2937", table_odd_background_fill_dark="#1f2937",
+    table_border_color="#374151", table_border_color_dark="#374151",
+    table_text_color="#f3f4f6", table_text_color_dark="#f3f4f6",
+    checkbox_background_color="#1f2937", checkbox_background_color_dark="#1f2937",
+    link_text_color="#818cf8", link_text_color_dark="#818cf8",
 )
 
 def set_fal_key(api_key: str):
